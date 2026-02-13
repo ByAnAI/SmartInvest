@@ -1,0 +1,17 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rules for the user portfolio collection
+    match /user_portfolios/{userId} {
+      // Allow read and write only if the user is authenticated 
+      // AND their UID matches the document ID they are trying to access
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Default deny for all other collections/documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
