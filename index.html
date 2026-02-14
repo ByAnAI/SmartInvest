@@ -34,29 +34,22 @@
             background: #94a3b8;
         }
     </style>
-
-    <!-- Import Map -->
-    <script type="importmap">
+<script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@^19.2.4",
-    "react/": "https://esm.sh/react@^19.2.4/",
     "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "recharts": "https://esm.sh/recharts@^3.7.0",
     "@google/genai": "https://esm.sh/@google/genai@^1.41.0",
-    "firebase/app": "https://www.gstatic.com/firebasejs/11.3.1/firebase-app.js",
-    "firebase/auth": "https://www.gstatic.com/firebasejs/11.3.1/firebase-auth.js",
-    "firebase/firestore": "https://www.gstatic.com/firebasejs/11.3.1/firebase-firestore.js",
-    "firebase/database": "https://www.gstatic.com/firebasejs/11.3.1/firebase-database.js",
-    "firebase/functions": "https://www.gstatic.com/firebasejs/11.3.1/firebase-functions.js",
-    "firebase/storage": "https://www.gstatic.com/firebasejs/11.3.1/firebase-storage.js",
-    "firebase/": "https://esm.sh/firebase@^12.9.0/"
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "firebase/": "https://esm.sh/firebase@^12.9.0/",
+    "recharts": "https://esm.sh/recharts@^3.7.0"
   }
 }
 </script>
-
 </head>
 <body class="text-slate-900">
     <div id="root"></div>
+    <!-- Explicit module entry point to resolve blank page issues -->
+    <script type="module" src="/index.tsx"></script>
 </body>
 </html>

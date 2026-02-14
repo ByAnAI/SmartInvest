@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { 
   signInWithEmailAndPassword, 
@@ -42,9 +41,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
     try {
       await reload(auth.currentUser);
       if (auth.currentUser.emailVerified) {
-        // User has confirmed! Now initialize them in Firestore.
+        // User has confirmed! Now initialize them in Firestore to ensure they are in the DB.
         await initializeUser(auth.currentUser.uid, auth.currentUser.email, auth.currentUser.displayName);
-        onClose(); // Log them directly into the dashboard
+        onClose(); // Close modal and log them directly into the dashboard
       } else {
         setError("Account not yet confirmed. Please click the link in your email.");
         setTimeout(() => setError(''), 3000);
@@ -94,7 +93,6 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
           
           if (user) {
             await sendEmailVerification(user);
-            // We DO NOT signOut here so that we can use the Check Status feature
             setRegisteredEmail(email);
             setVerificationRequired(true);
           }
@@ -158,9 +156,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
           <div className="mb-8 inline-flex items-center justify-center w-20 h-20 bg-indigo-50 text-indigo-600 rounded-full text-3xl animate-bounce">
             📧
           </div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-4">Confirm Your Email</h2>
+          <h2 className="text-2xl font-bold text-slate-900 mb-4">Account Verification</h2>
           <p className="text-slate-600 mb-8 leading-relaxed font-medium">
-            A link has been sent to the email <span className="text-indigo-600 font-bold">{registeredEmail}</span>. <br/>
+            A message link is sent to the email <span className="text-indigo-600 font-bold">{registeredEmail}</span>. <br/>
             <span className="text-indigo-500 mt-2 block font-bold">Please confirm.</span>
           </p>
           
@@ -189,7 +187,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
               Back to Login
             </button>
             <p className="text-[10px] text-slate-400 font-medium">
-              Check your spam folder if you don't see the link. Once confirmed, your institutional portfolio will be initialized automatically.
+              Check your spam folder if you don't see the link. Once confirmed, you will be directly logged in and added to our database.
             </p>
           </div>
         </div>
