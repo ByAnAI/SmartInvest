@@ -1,56 +1,116 @@
-
 import { 
   doc, 
   getDoc, 
+  getDocs,
+  collection,
   setDoc, 
   updateDoc, 
+  deleteDoc,
+  writeBatch,
   arrayUnion, 
-  arrayRemove 
+  arrayRemove,
 } from "firebase/firestore";
 import { db } from "./firebase";
-import { PortfolioItem } from "../types";
+import { PortfolioItem, UserMetadata } from "../types";
 
 const COLLECTION_NAME = "user_portfolios";
+const MASTER_ADMIN_EMAIL = "idris.elfeghi@byanai.com";
 
-/**
- * Robustly initializes a user document with identity info.
- */
 export const initializeUser = async (uid: string, email?: string | null, displayName?: string | null) => {
   const docRef = doc(db, COLLECTION_NAME, uid);
   
-  const metadata = { 
-    status: "active",
+  let existingData: any = {};
+  try {
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      existingData = docSnap.data();
+    }
+  } catch (e) {
+    console.warn("Firestore: Initializing new user record for UID:", uid);
+  }
+  
+  const isMasterAdmin = email?.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
+  const role = isMasterAdmin ? "admin" : (existingData.role || "user");
+  const status = existingData.status || "active";
+  const createdAt = existingData.createdAt || new Date().toISOString();
+
+  const metadata: UserMetadata = { 
+    uid,
+    status,
+    role,
     email: email || "unknown",
     displayName: displayName || "Investor",
     lastLogin: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    createdAt
   };
 
-  // We use setDoc with merge: true to ensure identity info is always present/updated
   await setDoc(docRef, metadata, { merge: true });
 
-  const docSnap = await getDoc(docRef);
-  if (!docSnap.exists() || !docSnap.data().items) {
-    await setDoc(docRef, { 
-      items: [],
-      createdAt: new Date().toISOString()
-    }, { merge: true });
+  // Ensure items and watchlist arrays exist
+  if (!existingData.items) {
+    await setDoc(docRef, { items: [] }, { merge: true });
+  }
+  if (!existingData.watchlist) {
+    await setDoc(docRef, { watchlist: ['AAPL', 'MSFT', 'NVDA', 'TSLA'] }, { merge: true });
+  }
+
+  return metadata;
+};
+
+export const getUserMetadata = async (uid: string): Promise<UserMetadata | null> => {
+  try {
+    const docRef = doc(db, COLLECTION_NAME, uid);
+    const docSnap = await getDoc(docRef);
+    return docSnap.exists() ? (docSnap.data() as UserMetadata) : null;
+  } catch (e) {
+    console.error("Firestore: Error fetching user metadata:", e);
+    return null;
   }
 };
 
-export const getPortfolio = async (uid: string): Promise<PortfolioItem[]> => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  const docSnap = await getDoc(docRef);
+export const getAllUsers = async (): Promise<UserMetadata[]> => {
+  try {
+    const colRef = collection(db, COLLECTION_NAME);
+    const querySnapshot = await getDocs(colRef);
+    return querySnapshot.docs.map(doc => ({ ...doc.data(), uid: doc.id } as UserMetadata));
+  } catch (error: any) {
+    console.error("Firestore Error in getAllUsers:", error.code, error.message);
+    throw error;
+  }
+};
 
-  if (docSnap.exists()) {
-    return docSnap.data().items || [];
-  } else {
-    const initialData = { 
-      items: [], 
-      createdAt: new Date().toISOString(),
-      lastActive: new Date().toISOString() 
-    };
-    await setDoc(docRef, initialData);
+export const updateUserStatus = async (uid: string, status: 'active' | 'disabled') => {
+  const docRef = doc(db, COLLECTION_NAME, uid);
+  await updateDoc(docRef, { status, updatedAt: new Date().toISOString() });
+};
+
+export const updateUserRole = async (uid: string, role: 'user' | 'admin') => {
+  const docRef = doc(db, COLLECTION_NAME, uid);
+  await updateDoc(docRef, { role, updatedAt: new Date().toISOString() });
+};
+
+export const deleteUserRecord = async (uid: string) => {
+  const docRef = doc(db, COLLECTION_NAME, uid);
+  await deleteDoc(docRef);
+};
+
+export const purgeUsers = async (uids: string[]) => {
+  const batch = writeBatch(db);
+  uids.forEach((uid) => {
+    const docRef = doc(db, COLLECTION_NAME, uid);
+    batch.delete(docRef);
+  });
+  await batch.commit();
+};
+
+export const getPortfolio = async (uid: string): Promise<PortfolioItem[]> => {
+  try {
+    const docRef = doc(db, COLLECTION_NAME, uid);
+    const docSnap = await getDoc(docRef);
+    return docSnap.exists() ? (docSnap.data().items || []) : [];
+  } catch (e) {
+    console.error("Firestore: Error fetching portfolio:", e);
     return [];
   }
 };
@@ -73,13 +133,11 @@ export const addStock = async (uid: string, item: PortfolioItem) => {
     };
     await updateDoc(docRef, { 
       items: updatedItems, 
-      lastActive: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
   } else {
     await updateDoc(docRef, {
       items: arrayUnion(item),
-      lastActive: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
   }
@@ -93,7 +151,6 @@ export const removeStock = async (uid: string, symbol: string) => {
   if (itemToRemove) {
     await updateDoc(docRef, {
       items: arrayRemove(itemToRemove),
-      lastActive: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
   }
@@ -103,7 +160,35 @@ export const clearPortfolio = async (uid: string) => {
   const docRef = doc(db, COLLECTION_NAME, uid);
   await updateDoc(docRef, {
     items: [],
-    lastActive: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+};
+
+// --- WATCHLIST SERVICE ---
+
+export const getWatchlist = async (uid: string): Promise<string[]> => {
+  try {
+    const docRef = doc(db, COLLECTION_NAME, uid);
+    const docSnap = await getDoc(docRef);
+    return docSnap.exists() ? (docSnap.data().watchlist || []) : [];
+  } catch (e) {
+    console.error("Firestore: Error fetching watchlist:", e);
+    return [];
+  }
+};
+
+export const addToWatchlist = async (uid: string, symbol: string) => {
+  const docRef = doc(db, COLLECTION_NAME, uid);
+  await updateDoc(docRef, {
+    watchlist: arrayUnion(symbol.toUpperCase()),
+    updatedAt: new Date().toISOString()
+  });
+};
+
+export const removeFromWatchlist = async (uid: string, symbol: string) => {
+  const docRef = doc(db, COLLECTION_NAME, uid);
+  await updateDoc(docRef, {
+    watchlist: arrayRemove(symbol.toUpperCase()),
     updatedAt: new Date().toISOString()
   });
 };

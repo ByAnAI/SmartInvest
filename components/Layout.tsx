@@ -7,9 +7,10 @@ interface LayoutProps {
   children: React.ReactNode;
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  isAdmin?: boolean;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) => {
+const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAdmin }) => {
   const user = auth.currentUser;
   
   const tabs = [
@@ -19,10 +20,14 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
     { id: 'news', label: 'Market News', icon: '🗞️' },
   ];
 
+  // Add admin tab if user has privileges
+  if (isAdmin) {
+    tabs.push({ id: 'admin', label: 'Admin Panel', icon: '🛡️' });
+  }
+
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      // App.tsx handles the state change and shows the landing page
     } catch (err) {
       console.error('Logout error', err);
     }
@@ -59,7 +64,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
         <div className="p-4 border-t border-slate-800 space-y-3">
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400 border border-indigo-500/20 font-bold overflow-hidden">
+              <div className={`w-8 h-8 rounded-full ${isAdmin ? 'bg-indigo-500' : 'bg-indigo-500/20'} flex items-center justify-center text-white border border-indigo-500/20 font-bold overflow-hidden shadow-sm`}>
                 {user?.photoURL ? (
                     <img src={user.photoURL} alt="Avatar" className="w-full h-full object-cover" />
                 ) : (
@@ -67,7 +72,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
                 )}
               </div>
               <div className="overflow-hidden">
-                <p className="text-xs font-bold text-white truncate">{user?.displayName || 'Active User'}</p>
+                <div className="flex items-center space-x-2">
+                  <p className="text-xs font-bold text-white truncate">{user?.displayName || 'Active User'}</p>
+                  {isAdmin && (
+                    <span className="text-[7px] font-black bg-indigo-500 text-white px-1 py-0.5 rounded tracking-tighter uppercase">Admin</span>
+                  )}
+                </div>
                 <p className="text-[10px] text-slate-500 truncate">{user?.email}</p>
               </div>
             </div>
@@ -95,6 +105,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab }) =>
           </div>
           
           <div className="flex items-center space-x-2 md:space-x-4">
+            {isAdmin && (
+              <div className="hidden sm:flex items-center text-[9px] font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-100 uppercase tracking-widest">
+                Administrative Mode
+              </div>
+            )}
+            
             <div className="hidden lg:flex items-center space-x-2 text-[10px] text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 font-bold uppercase tracking-tighter">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               <span>Secure Cloud Sync</span>

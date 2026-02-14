@@ -16,7 +16,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
       <div className="relative z-10 max-w-4xl text-center space-y-8">
         <div className="inline-flex items-center space-x-2 bg-white/5 border border-white/10 px-4 py-2 rounded-full mb-4 backdrop-blur-sm">
           <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span className="text-indigo-200 text-xs font-semibold uppercase tracking-widest">Powered by Gemini 3.5 AI</span>
+          <span className="text-indigo-200 text-xs font-semibold uppercase tracking-widest">Powered by Gemini 3 AI</span>
         </div>
         
         <h1 className="text-5xl md:text-7xl font-extrabold text-white tracking-tight leading-tight">

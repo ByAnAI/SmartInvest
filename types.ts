@@ -16,6 +16,17 @@ export interface PortfolioItem {
   avgCost: number;
 }
 
+export interface UserMetadata {
+  uid: string;
+  email: string;
+  displayName: string;
+  status: 'active' | 'disabled';
+  role: 'user' | 'admin';
+  lastLogin: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface InsightResponse {
   sentiment: 'Bullish' | 'Bearish' | 'Neutral';
   summary: string;

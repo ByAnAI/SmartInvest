@@ -2,16 +2,33 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Rules for the user portfolio collection
-    match /user_portfolios/{userId} {
-      // Allow read and write only if the user is authenticated 
-      // AND their UID matches the document ID they are trying to access
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    
+    // Global Helper: Identifies the root authority by email.
+    function isMasterAdmin() {
+      return request.auth != null && 
+             request.auth.token.email.lower() == "idris.elfeghi@byanai.com";
     }
 
-    // Default deny for all other collections/documents
+    // Helper: Checks if the current requester has been promoted to an admin role.
+    function isPromotedAdmin() {
+      return request.auth != null && 
+             get(/databases/$(database)/documents/user_portfolios/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Rules for the User Portfolios and Identity collection
+    match /user_portfolios {
+      
+      allow list: if isMasterAdmin() || isPromotedAdmin();
+
+      match /{userId} {
+        allow read, write: if isMasterAdmin();
+        allow get, write: if request.auth != null && request.auth.uid == userId;
+        allow get: if isPromotedAdmin();
+      }
+    }
+
     match /{document=**} {
-      allow read, write: if false;
+      allow read, write: if isMasterAdmin();
     }
   }
 }

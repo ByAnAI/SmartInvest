@@ -3,14 +3,17 @@ import React, { useEffect, useState } from 'react';
 import { getMarketNews } from '../services/geminiService';
 
 const NewsSection: React.FC = () => {
-  const [news, setNews] = useState<string>('');
+  const [newsData, setNewsData] = useState<{ text: string; sources: { uri: string; title: string }[] }>({
+    text: '',
+    sources: []
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchNews = async () => {
       try {
         const data = await getMarketNews();
-        setNews(data);
+        setNewsData(data);
       } catch (e) {
         console.error("News fetch error", e);
       } finally {
@@ -43,11 +46,30 @@ const NewsSection: React.FC = () => {
       ) : (
         <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
           <div className="prose prose-slate max-w-none">
-            {/* Split by potential newlines or bullet points for a nicer look if needed, 
-                but for simplicity we'll render the markdown text */}
             <div className="whitespace-pre-line text-slate-700 leading-loose">
-              {news}
+              {newsData.text}
             </div>
+            
+            {/* Grounding Sources Listing */}
+            {newsData.sources.length > 0 && (
+              <div className="mt-8 pt-6 border-t border-slate-100">
+                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Referenced Sources</h4>
+                <div className="flex flex-wrap gap-2">
+                  {newsData.sources.map((source, i) => (
+                    <a 
+                      key={i} 
+                      href={source.uri} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-bold uppercase hover:bg-indigo-100 transition-all border border-indigo-100"
+                    >
+                      <span className="mr-2">🔗</span>
+                      {source.title || 'Source'}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

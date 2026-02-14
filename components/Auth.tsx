@@ -1,109 +1,126 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
   signInWithPopup,
   sendEmailVerification,
-  signOut
+  sendPasswordResetEmail,
+  signOut,
+  reload
 } from 'firebase/auth';
 import { auth, googleProvider } from '../services/firebase';
-import { initializeUser } from '../services/firestoreService';
+import { initializeUser, getUserMetadata } from '../services/firestoreService';
 
 interface AuthProps {
   onClose: () => void;
+  initialError?: string | null;
 }
 
-const Auth: React.FC<AuthProps> = ({ onClose }) => {
-  const [isLogin, setIsLogin] = useState(true);
+type AuthMode = 'login' | 'signup' | 'forgot-password';
+
+const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
+  const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
-  const [verificationSent, setVerificationSent] = useState(false);
+  const [verificationRequired, setVerificationRequired] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState('');
-  const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [checkingStatus, setCheckingStatus] = useState(false);
+
+  useEffect(() => {
+    if (initialError) {
+      setError(initialError);
+    }
+  }, [initialError]);
+
+  const handleCheckVerification = async () => {
+    if (!auth.currentUser) return;
+    setCheckingStatus(true);
+    try {
+      await reload(auth.currentUser);
+      if (auth.currentUser.emailVerified) {
+        // User has confirmed! Now initialize them in Firestore.
+        await initializeUser(auth.currentUser.uid, auth.currentUser.email, auth.currentUser.displayName);
+        onClose(); // Log them directly into the dashboard
+      } else {
+        setError("Account not yet confirmed. Please click the link in your email.");
+        setTimeout(() => setError(''), 3000);
+      }
+    } catch (err: any) {
+      setError("Status check failed: " + err.message);
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setSuccessMsg('');
     
     try {
-      if (isLogin) {
-        try {
-          const userCredential = await signInWithEmailAndPassword(auth, email, password);
-          const user = userCredential.user;
-          
-          // CRITICAL: Initialize Firestore doc with identity while token is fresh
-          await initializeUser(user.uid, user.email, user.displayName);
+      if (mode === 'login') {
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
 
-          if (!user.emailVerified) {
-            await signOut(auth);
-            setRegisteredEmail(email);
-            setVerificationSent(true);
-            return;
-          }
-          
-          onClose();
-        } catch (err: any) {
-          if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-            setError("Invalid email or password. Please verify your credentials.");
-          } else {
-            setError("Authentication failed. " + err.message);
-          }
+        if (!user.emailVerified) {
+          await sendEmailVerification(user);
+          setRegisteredEmail(email);
+          setVerificationRequired(true);
+          setLoading(false);
+          return;
         }
-      } else {
+        
+        await initializeUser(user.uid, user.email, user.displayName);
+        const metadata = await getUserMetadata(user.uid);
+        
+        if (metadata?.status === 'disabled') {
+          setError("Your institutional access has been suspended.");
+          await signOut(auth);
+          setLoading(false);
+          return;
+        }
+
+        onClose();
+
+      } else if (mode === 'signup') {
         try {
           const userCredential = await createUserWithEmailAndPassword(auth, email, password);
           const user = userCredential.user;
           
           if (user) {
-            // Write to Firestore before any redirect or signout
-            await initializeUser(user.uid, user.email, user.displayName);
-            
-            // Send verification email
             await sendEmailVerification(user);
-            
-            // Sign out only after DB write is guaranteed
-            await signOut(auth);
-            
+            // We DO NOT signOut here so that we can use the Check Status feature
             setRegisteredEmail(email);
-            setVerificationSent(true);
+            setVerificationRequired(true);
           }
         } catch (err: any) {
           if (err.code === 'auth/email-already-in-use') {
-            setError("This account already exists. Redirecting to Sign In...");
-            setTimeout(() => {
-              setIsLogin(true);
-              setError('');
-            }, 2000);
+            setError("This account already exists. Please sign in instead.");
+            setTimeout(() => setMode('login'), 2000);
           } else if (err.code === 'auth/weak-password') {
-            setError("Password is too weak. Please use at least 6 characters.");
+            setError("Password must be at least 6 characters.");
           } else {
-            setError(err.message || "An error occurred during sign up");
+            setError(err.message || "Registration failed.");
           }
         }
+      } else if (mode === 'forgot-password') {
+        await sendPasswordResetEmail(auth, email);
+        setSuccessMsg("Reset link sent! Please check your email.");
+        setTimeout(() => setMode('login'), 3000);
       }
     } catch (err: any) {
-      setError("Network or connection error. Please try again.");
+      if (mode === 'login') {
+        setError("Invalid email or password.");
+      } else {
+        setError(err.message || "An unexpected error occurred.");
+      }
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleResendEmail = async () => {
-    setResendStatus('sending');
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      await sendEmailVerification(userCredential.user);
-      await signOut(auth);
-      setResendStatus('sent');
-      setTimeout(() => setResendStatus('idle'), 5000);
-    } catch (err: any) {
-      setError("Could not resend email. Please verify credentials or try again later.");
-      setVerificationSent(false);
-      setResendStatus('idle');
     }
   };
 
@@ -112,15 +129,19 @@ const Auth: React.FC<AuthProps> = ({ onClose }) => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       if (result.user) {
-        await initializeUser(result.user.uid, result.user.email, result.user.displayName);
-        
         if (result.user.emailVerified) {
-          onClose();
+          await initializeUser(result.user.uid, result.user.email, result.user.displayName);
+          const metadata = await getUserMetadata(result.user.uid);
+          if (metadata?.status === 'disabled') {
+            setError("Your access has been suspended.");
+            await signOut(auth);
+          } else {
+            onClose();
+          }
         } else {
-          // Generally Google accounts are pre-verified, but we check just in case
-          await signOut(auth);
+          await sendEmailVerification(result.user);
           setRegisteredEmail(result.user.email || '');
-          setVerificationSent(true);
+          setVerificationRequired(true);
         }
       }
     } catch (err: any) {
@@ -130,38 +151,46 @@ const Auth: React.FC<AuthProps> = ({ onClose }) => {
     }
   };
 
-  if (verificationSent) {
+  if (verificationRequired) {
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
-        <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden relative border border-slate-200 p-8 text-center">
-          <div className="mb-6 inline-flex items-center justify-center w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full text-2xl">
-            ✉️
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-300">
+        <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden relative border border-slate-200 p-10 text-center">
+          <div className="mb-8 inline-flex items-center justify-center w-20 h-20 bg-indigo-50 text-indigo-600 rounded-full text-3xl animate-bounce">
+            📧
           </div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-4">Verification Sent</h2>
-          <p className="text-slate-600 mb-8 leading-relaxed">
-            A confirmation link was sent to <span className="font-bold text-slate-900">{registeredEmail}</span>. Once verified, you'll have full access to the AI portfolio dashboard.
+          <h2 className="text-2xl font-bold text-slate-900 mb-4">Confirm Your Email</h2>
+          <p className="text-slate-600 mb-8 leading-relaxed font-medium">
+            A link has been sent to the email <span className="text-indigo-600 font-bold">{registeredEmail}</span>. <br/>
+            <span className="text-indigo-500 mt-2 block font-bold">Please confirm.</span>
           </p>
           
-          <div className="space-y-3">
+          {error && (
+            <div className="mb-4 p-3 text-xs bg-rose-50 text-rose-600 rounded-xl font-bold animate-pulse">
+              {error}
+            </div>
+          )}
+
+          <div className="space-y-4">
             <button
-              onClick={() => {
-                setVerificationSent(false);
-                setIsLogin(true);
-                setError('');
+              onClick={handleCheckVerification}
+              disabled={checkingStatus}
+              className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold hover:bg-indigo-600 transition-all active:scale-95 shadow-xl disabled:opacity-50"
+            >
+              {checkingStatus ? 'Verifying Status...' : "I've Confirmed, Log Me In"}
+            </button>
+            <button
+              onClick={async () => {
+                await signOut(auth);
+                setVerificationRequired(false);
+                setMode('login');
               }}
-              className="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold hover:bg-indigo-700 shadow-lg transition-all active:scale-95"
+              className="w-full bg-slate-100 text-slate-500 py-3 rounded-2xl font-bold hover:bg-slate-200 transition-all text-xs"
             >
               Back to Login
             </button>
-            
-            <button
-              onClick={handleResendEmail}
-              disabled={resendStatus !== 'idle'}
-              className="w-full bg-slate-50 text-slate-600 py-3 rounded-xl font-semibold hover:bg-slate-100 transition-all disabled:opacity-50 text-sm"
-            >
-              {resendStatus === 'sending' ? 'Sending...' : 
-               resendStatus === 'sent' ? '✓ Email Resent' : 'Resend Verification Email'}
-            </button>
+            <p className="text-[10px] text-slate-400 font-medium">
+              Check your spam folder if you don't see the link. Once confirmed, your institutional portfolio will be initialized automatically.
+            </p>
           </div>
         </div>
       </div>
@@ -181,44 +210,50 @@ const Auth: React.FC<AuthProps> = ({ onClose }) => {
         <div className="p-8">
           <div className="text-center mb-8">
             <h2 className="text-3xl font-bold text-slate-900">
-              {isLogin ? 'Security Portal' : 'Create Vault'}
+              {mode === 'login' ? 'Investor Login' : mode === 'signup' ? 'Create Vault' : 'Account Recovery'}
             </h2>
             <p className="text-slate-500 mt-2 text-sm font-medium">
-              Enterprise Wealth OS Login
+              {mode === 'forgot-password' ? 'Restore access to your secure portal' : 'Access Institutional Wealth OS'}
             </p>
           </div>
 
           {error && (
-            <div className={`mb-6 p-4 text-sm rounded-xl text-center font-medium animate-in fade-in zoom-in duration-200 border ${
-              error.includes("Redirecting") 
-                ? "bg-indigo-50 border-indigo-100 text-indigo-600" 
-                : "bg-rose-50 border-rose-100 text-rose-600"
-            }`}>
-              {error}
+            <div className="mb-6 p-4 text-sm rounded-xl text-center font-bold animate-in fade-in zoom-in duration-200 border bg-rose-50 border-rose-100 text-rose-600">
+              ⚠️ {error}
             </div>
           )}
 
-          <button
-            onClick={handleGoogleSignIn}
-            disabled={loading}
-            className="w-full flex items-center justify-center space-x-3 py-3 border border-slate-200 rounded-xl hover:bg-slate-50 transition-all font-semibold mb-6 disabled:opacity-50"
-          >
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-            <span>{loading ? 'Authenticating...' : 'Continue with Google'}</span>
-          </button>
+          {successMsg && (
+            <div className="mb-6 p-4 text-sm rounded-xl text-center font-bold animate-in fade-in zoom-in duration-200 border bg-emerald-50 border-emerald-100 text-emerald-600">
+              ✓ {successMsg}
+            </div>
+          )}
 
-          <div className="relative mb-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-100"></div>
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white px-3 text-slate-400 font-bold tracking-widest">Standard Identity</span>
-            </div>
-          </div>
+          {mode !== 'forgot-password' && (
+            <>
+              <button
+                onClick={handleGoogleSignIn}
+                disabled={loading}
+                className="w-full flex items-center justify-center space-x-3 py-3 border border-slate-200 rounded-xl hover:bg-slate-50 transition-all font-semibold mb-6 disabled:opacity-50"
+              >
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
+                <span>Continue with Google</span>
+              </button>
+
+              <div className="relative mb-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-100"></div>
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-white px-3 text-slate-400 font-bold tracking-widest">Or Use Email</span>
+                </div>
+              </div>
+            </>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Work Email</label>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Corporate Email</label>
               <input
                 type="email"
                 required
@@ -228,36 +263,66 @@ const Auth: React.FC<AuthProps> = ({ onClose }) => {
                 placeholder="investor@secure.com"
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Password</label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all font-medium"
-                placeholder="••••••••"
-              />
-            </div>
+            {mode !== 'forgot-password' && (
+              <div>
+                <div className="flex justify-between items-center mb-1.5 ml-1">
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Access Password</label>
+                  {mode === 'login' && (
+                    <button 
+                      type="button"
+                      onClick={() => setMode('forgot-password')}
+                      className="text-xs font-bold text-indigo-600 hover:underline"
+                    >
+                      Forgot?
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all font-medium"
+                  placeholder="••••••••"
+                />
+              </div>
+            )}
             <button
               disabled={loading}
               className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-indigo-600 shadow-xl shadow-slate-200 transition-all active:scale-95 disabled:opacity-50 mt-2"
             >
-              {loading ? 'Verifying...' : isLogin ? 'Open Dashboard' : 'Initialize Account'}
+              {loading ? (
+                <span className="flex items-center justify-center">
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin mr-2"></span>
+                  Security Check...
+                </span>
+              ) : mode === 'login' ? 'Authorize Dashboard' : mode === 'signup' ? 'Create Account' : 'Request Reset Link'}
             </button>
           </form>
 
           <div className="mt-8 text-center text-sm text-slate-500 font-medium">
-            {isLogin ? "Need a new vault?" : "Returning investor?"}
-            <button 
-              onClick={() => {
-                setIsLogin(!isLogin);
-                setError('');
-              }}
-              className="ml-2 text-indigo-600 font-bold hover:underline"
-            >
-              {isLogin ? 'Join SmartInvest' : 'Login here'}
-            </button>
+            {mode === 'forgot-password' ? (
+              <button 
+                onClick={() => setMode('login')}
+                className="text-indigo-600 font-bold hover:underline"
+              >
+                Return to Login
+              </button>
+            ) : (
+              <>
+                {mode === 'login' ? "New to institutional wealth?" : "Already an member?"}
+                <button 
+                  onClick={() => {
+                    setMode(mode === 'login' ? 'signup' : 'login');
+                    setError('');
+                    setSuccessMsg('');
+                  }}
+                  className="ml-2 text-indigo-600 font-bold hover:underline"
+                >
+                  {mode === 'login' ? 'Create Account' : 'Login here'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
