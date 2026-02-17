@@ -1,32 +1,43 @@
+
 rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Global Helper: Identifies the root authority by email.
+    // Check if the user is the owner of the document
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    // Check if user is the hardcoded master admin
     function isMasterAdmin() {
       return request.auth != null && 
-             request.auth.token.email.lower() == "idris.elfeghi@byanai.com";
+             request.auth.token.keys().hasAny(['email']) && 
+             request.auth.token.email == "idris.elfeghi@byanai.com";
     }
 
-    // Helper: Checks if the current requester has been promoted to an admin role.
+    // Check if user has admin role in database
     function isPromotedAdmin() {
       return request.auth != null && 
-             get(/databases/$(database)/documents/user_portfolios/$(request.auth.uid)).data.role == 'admin';
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
-    // Rules for the User Portfolios and Identity collection
-    match /user_portfolios {
-      
-      allow list: if isMasterAdmin() || isPromotedAdmin();
-
-      match /{userId} {
-        allow read, write: if isMasterAdmin();
-        allow get, write: if request.auth != null && request.auth.uid == userId;
-        allow get: if isPromotedAdmin();
-      }
+    // USER PROFILES
+    match /users/{userId} {
+      // Explicitly allow all operations for owner to prevent 'permission-denied' on first create
+      allow create, update, delete, get, list: if isOwner(userId);
+      // Allow admins to access any profile
+      allow read, write: if isMasterAdmin() || isPromotedAdmin();
     }
 
+    // USER DATA (Portfolio, Watchlist)
+    match /user_data/{userId} {
+      allow create, update, delete, get, list: if isOwner(userId);
+      allow read, write: if isMasterAdmin() || isPromotedAdmin();
+    }
+
+    // DEFAULT FALLBACK
     match /{document=**} {
       allow read, write: if isMasterAdmin();
     }

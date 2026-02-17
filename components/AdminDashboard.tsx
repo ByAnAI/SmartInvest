@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { getAllUsers, updateUserStatus, updateUserRole, deleteUserRecord, purgeUsers } from '../services/firestoreService';
 import { UserMetadata } from '../types';
@@ -20,13 +21,6 @@ const AdminDashboard: React.FC = () => {
     try {
       console.log("AdminDashboard: Initializing synchronization sequence...");
       
-      // If forceRefresh is requested, we force Firebase to refresh the user's ID token.
-      // This is CRITICAL if security rules were just updated, as it refreshes the token claims.
-      if (forceRefresh && auth.currentUser) {
-        console.log("AdminDashboard: Forcing Auth Token Refresh (claims update)...");
-        await auth.currentUser.getIdToken(true);
-      }
-      
       const data = await getAllUsers();
       console.log(`AdminDashboard: Registry sync complete. Found ${data.length} records.`);
       setUsers(data);
@@ -35,12 +29,7 @@ const AdminDashboard: React.FC = () => {
       
       let errorMessage = "Access Denied.";
       if (err.code === 'permission-denied') {
-        errorMessage = `Security Policy Restriction: Access for ${currentUser?.email} was rejected by Cloud Rules. 
-        
-        If you are the Master Admin, please:
-        1. Click 'Force Registry Sync' below to refresh your token.
-        2. If that fails, log out and log back in.
-        3. Ensure your email is verified.`;
+        errorMessage = `Security Policy Restriction: Access for ${currentUser?.email} was rejected by Cloud Rules.`;
       } else {
         errorMessage = err.message || "An internal error occurred during data retrieval.";
       }
@@ -165,12 +154,6 @@ const AdminDashboard: React.FC = () => {
                   className="bg-rose-600 text-white px-6 py-3 rounded-2xl text-xs font-bold uppercase tracking-widest hover:bg-rose-700 transition-all shadow-lg shadow-rose-900/20 active:scale-95"
                 >
                   Retry Authorization
-                </button>
-                <button 
-                  onClick={() => auth.signOut()}
-                  className="bg-white border border-rose-200 text-rose-600 px-6 py-3 rounded-2xl text-xs font-bold uppercase tracking-widest hover:bg-rose-50 transition-all"
-                >
-                  Log Out / Refresh Session
                 </button>
               </div>
             </div>

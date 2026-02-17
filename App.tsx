@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, User, signOut } from 'firebase/auth';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from './services/firebase';
-import { getUserMetadata, initializeUser } from './services/firestoreService';
+import { initializeUser } from './services/firestoreService';
 import Layout from './components/Layout';
 import Dashboard from './components/Dashboard';
 import AIAnalysis from './components/AIAnalysis';
@@ -19,19 +19,7 @@ const App: React.FC = () => {
   const [userMetadata, setUserMetadata] = useState<UserMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAuth, setShowAuth] = useState(false);
-  const [blockMessage, setBlockMessage] = useState<string | null>(null);
-
-  /**
-   * Security Redirect Hook
-   * Ensures that if a user's role is not 'admin' but they are currently on the 'admin' tab
-   * they are redirected back to the dashboard.
-   */
-  useEffect(() => {
-    const isAdmin = userMetadata?.role === 'admin';
-    if (activeTab === 'admin' && userMetadata && !isAdmin) {
-      setActiveTab('dashboard');
-    }
-  }, [activeTab, userMetadata]);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
 
   /**
    * Auth State Observer
@@ -39,58 +27,39 @@ const App: React.FC = () => {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setLoading(true);
-      if (currentUser) {
-        // If unverified, we don't clear the user state immediately if showAuth is open,
-        // because the Auth.tsx component might be handling the verification flow.
-        if (!currentUser.emailVerified) {
-          // If the Auth modal isn't open, we assume they are trying to bypass or stale session.
-          // Otherwise, we let them stay "logged in" so the Auth modal can check verification status.
-          if (!showAuth) {
-            setBlockMessage("Activation required. Please verify your account via the link sent to your email.");
-            await signOut(auth);
-            setUser(null);
-            setUserMetadata(null);
-          } else {
-             // Let Auth.tsx handle it
-             setUser(currentUser);
-          }
-        } else {
-          // User is confirmed! Initialize/Update user record.
+      try {
+        if (currentUser) {
+          setUser(currentUser);
+          // We are not saving profile data to DB yet as requested, 
+          // but we initialize the mock service for the UI to function.
           const metadata = await initializeUser(
             currentUser.uid, 
             currentUser.email, 
             currentUser.displayName
           );
-          
-          if (metadata && metadata.status === 'disabled') {
-            setBlockMessage("Your institutional access has been suspended by an administrator.");
-            await signOut(auth);
-            setUser(null);
-            setUserMetadata(null);
-          } else {
-            setUser(currentUser);
-            setUserMetadata(metadata);
-            setBlockMessage(null);
-          }
+          setUserMetadata(metadata);
+        } else {
+          setUser(null);
+          setUserMetadata(null);
         }
-      } else {
+      } catch (err) {
+        console.error("Auth State Error", err);
         setUser(null);
-        setUserMetadata(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => unsubscribe();
-  }, [showAuth]);
+  }, []);
 
-  const handleStart = () => {
-    if (!user) {
-      setShowAuth(true);
-    }
+  const handleAuthOpen = (mode: 'login' | 'signup') => {
+    setAuthMode(mode);
+    setShowAuth(true);
   };
 
   const renderContent = () => {
-    const isAdmin = userMetadata?.role === 'admin';
+    const isAdmin = false; 
 
     switch (activeTab) {
       case 'dashboard':
@@ -119,15 +88,14 @@ const App: React.FC = () => {
     );
   }
 
-  // Only show the app if verified. If unverified but "logged in", the landing page/auth modal stays visible.
-  if (!user || !user.emailVerified) {
+  if (!user) {
     return (
       <>
-        <LandingPage onStart={handleStart} />
+        <LandingPage onAuth={handleAuthOpen} />
         {showAuth && (
           <Auth 
             onClose={() => setShowAuth(false)} 
-            initialError={blockMessage}
+            initialMode={authMode}
           />
         )}
       </>
@@ -138,7 +106,7 @@ const App: React.FC = () => {
     <Layout 
       activeTab={activeTab} 
       setActiveTab={setActiveTab} 
-      isAdmin={userMetadata?.role === 'admin'}
+      isAdmin={false}
     >
       <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
         {renderContent()}

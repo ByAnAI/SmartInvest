@@ -2,10 +2,10 @@
 import React from 'react';
 
 interface LandingPageProps {
-  onStart: () => void;
+  onAuth: (mode: 'login' | 'signup') => void;
 }
 
-const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
+const LandingPage: React.FC<LandingPageProps> = ({ onAuth }) => {
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center relative overflow-hidden px-4">
       {/* Background Decorative Elements */}
@@ -30,22 +30,25 @@ const LandingPage: React.FC<LandingPageProps> = ({ onStart }) => {
           SmartInvest AI combines deep neural analysis with real-time market grounding to provide you with institutional-grade insights for your personal portfolio.
         </p>
         
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-8">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-6 pt-10">
           <button 
-            onClick={onStart}
-            className="group relative px-10 py-5 bg-indigo-600 text-white rounded-2xl font-bold text-lg shadow-2xl shadow-indigo-500/40 hover:bg-indigo-500 transition-all duration-300 transform hover:-translate-y-1 active:scale-95 overflow-hidden"
+            onClick={() => onAuth('login')}
+            className="w-full sm:w-auto px-12 py-5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold text-lg shadow-2xl shadow-emerald-500/30 transition-all duration-300 transform hover:-translate-y-1 active:scale-95 flex items-center justify-center"
           >
-            <span className="relative z-10 flex items-center">
-              Get Started Now
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 ml-2 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-              </svg>
-            </span>
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
+            Sign In
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+            </svg>
           </button>
           
-          <button className="px-10 py-5 bg-transparent text-slate-300 border border-slate-700 rounded-2xl font-bold text-lg hover:bg-white/5 transition-all">
-            View Live Demo
+          <button 
+            onClick={() => onAuth('signup')}
+            className="w-full sm:w-auto px-12 py-5 bg-transparent border-2 border-emerald-500 text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-400 rounded-2xl font-bold text-lg transition-all duration-300 transform hover:-translate-y-1 active:scale-95 flex items-center justify-center"
+          >
+            Sign Up
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+            </svg>
           </button>
         </div>
 

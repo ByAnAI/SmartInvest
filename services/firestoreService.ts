@@ -1,194 +1,94 @@
-import { 
-  doc, 
-  getDoc, 
-  getDocs,
-  collection,
-  setDoc, 
-  updateDoc, 
-  deleteDoc,
-  writeBatch,
-  arrayUnion, 
-  arrayRemove,
-} from "firebase/firestore";
-import { db } from "./firebase";
 import { PortfolioItem, UserMetadata } from "../types";
 
-const COLLECTION_NAME = "user_portfolios";
-const MASTER_ADMIN_EMAIL = "idris.elfeghi@byanai.com";
+// MOCK IMPLEMENTATION - NO FIRESTORE CONNECTION
 
 export const initializeUser = async (uid: string, email?: string | null, displayName?: string | null) => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  
-  let existingData: any = {};
-  try {
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
-      existingData = docSnap.data();
-    }
-  } catch (e) {
-    console.warn("Firestore: Initializing new user record for UID:", uid);
-  }
-  
-  const isMasterAdmin = email?.toLowerCase() === MASTER_ADMIN_EMAIL.toLowerCase();
-  const role = isMasterAdmin ? "admin" : (existingData.role || "user");
-  const status = existingData.status || "active";
-  const createdAt = existingData.createdAt || new Date().toISOString();
-
-  const metadata: UserMetadata = { 
+  // Return dummy metadata so the app doesn't crash
+  return {
     uid,
-    status,
-    role,
-    email: email || "unknown",
-    displayName: displayName || "Investor",
+    email: email || '',
+    displayName: displayName || 'Investor',
+    status: 'active',
+    role: 'user',
     lastLogin: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    createdAt
-  };
-
-  await setDoc(docRef, metadata, { merge: true });
-
-  // Ensure items and watchlist arrays exist
-  if (!existingData.items) {
-    await setDoc(docRef, { items: [] }, { merge: true });
-  }
-  if (!existingData.watchlist) {
-    await setDoc(docRef, { watchlist: ['AAPL', 'MSFT', 'NVDA', 'TSLA'] }, { merge: true });
-  }
-
-  return metadata;
+  } as UserMetadata;
 };
 
 export const getUserMetadata = async (uid: string): Promise<UserMetadata | null> => {
-  try {
-    const docRef = doc(db, COLLECTION_NAME, uid);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? (docSnap.data() as UserMetadata) : null;
-  } catch (e) {
-    console.error("Firestore: Error fetching user metadata:", e);
-    return null;
-  }
+  return null;
 };
 
 export const getAllUsers = async (): Promise<UserMetadata[]> => {
-  try {
-    const colRef = collection(db, COLLECTION_NAME);
-    const querySnapshot = await getDocs(colRef);
-    return querySnapshot.docs.map(doc => ({ ...doc.data(), uid: doc.id } as UserMetadata));
-  } catch (error: any) {
-    console.error("Firestore Error in getAllUsers:", error.code, error.message);
-    throw error;
-  }
+  // Return some mock users so the Admin Dashboard is populated and actions can be tested
+  return [
+    {
+      uid: 'mock-user-1',
+      email: 'active@investor.com',
+      displayName: 'Active Investor',
+      status: 'active',
+      role: 'user',
+      lastLogin: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      uid: 'mock-user-2',
+      email: 'trader@vault.com',
+      displayName: 'Day Trader',
+      status: 'disabled',
+      role: 'user',
+      lastLogin: new Date(Date.now() - 86400000).toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+  ];
 };
 
 export const updateUserStatus = async (uid: string, status: 'active' | 'disabled') => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  await updateDoc(docRef, { status, updatedAt: new Date().toISOString() });
+  console.log(`Mock: Updating status for user ${uid} to ${status}`);
 };
 
 export const updateUserRole = async (uid: string, role: 'user' | 'admin') => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  await updateDoc(docRef, { role, updatedAt: new Date().toISOString() });
+  console.log(`Mock: Updating role for user ${uid} to ${role}`);
 };
 
 export const deleteUserRecord = async (uid: string) => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  await deleteDoc(docRef);
+  console.log(`Mock: Deleting user record ${uid}`);
 };
 
 export const purgeUsers = async (uids: string[]) => {
-  const batch = writeBatch(db);
-  uids.forEach((uid) => {
-    const docRef = doc(db, COLLECTION_NAME, uid);
-    batch.delete(docRef);
-  });
-  await batch.commit();
+  console.log(`Mock: Purging users ${uids.join(', ')}`);
 };
 
+// --- PORTFOLIO & WATCHLIST (MOCK) ---
+
 export const getPortfolio = async (uid: string): Promise<PortfolioItem[]> => {
-  try {
-    const docRef = doc(db, COLLECTION_NAME, uid);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? (docSnap.data().items || []) : [];
-  } catch (e) {
-    console.error("Firestore: Error fetching portfolio:", e);
-    return [];
-  }
+  return [];
 };
 
 export const addStock = async (uid: string, item: PortfolioItem) => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  const portfolio = await getPortfolio(uid);
-  
-  const existingIndex = portfolio.findIndex(i => i.symbol === item.symbol);
-  
-  if (existingIndex > -1) {
-    const updatedItems = [...portfolio];
-    const existing = updatedItems[existingIndex];
-    const totalShares = existing.shares + item.shares;
-    const totalCost = (existing.shares * existing.avgCost) + (item.shares * item.avgCost);
-    updatedItems[existingIndex] = {
-      symbol: item.symbol,
-      shares: totalShares,
-      avgCost: totalCost / totalShares
-    };
-    await updateDoc(docRef, { 
-      items: updatedItems, 
-      updatedAt: new Date().toISOString()
-    });
-  } else {
-    await updateDoc(docRef, {
-      items: arrayUnion(item),
-      updatedAt: new Date().toISOString()
-    });
-  }
+  console.log("Mock: Added stock", item);
 };
 
 export const removeStock = async (uid: string, symbol: string) => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  const portfolio = await getPortfolio(uid);
-  const itemToRemove = portfolio.find(i => i.symbol === symbol);
-  
-  if (itemToRemove) {
-    await updateDoc(docRef, {
-      items: arrayRemove(itemToRemove),
-      updatedAt: new Date().toISOString()
-    });
-  }
+  console.log("Mock: Removed stock", symbol);
 };
 
 export const clearPortfolio = async (uid: string) => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  await updateDoc(docRef, {
-    items: [],
-    updatedAt: new Date().toISOString()
-  });
+  console.log("Mock: Cleared portfolio");
 };
 
-// --- WATCHLIST SERVICE ---
-
 export const getWatchlist = async (uid: string): Promise<string[]> => {
-  try {
-    const docRef = doc(db, COLLECTION_NAME, uid);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? (docSnap.data().watchlist || []) : [];
-  } catch (e) {
-    console.error("Firestore: Error fetching watchlist:", e);
-    return [];
-  }
+  // Return default watchlist so UI looks populated
+  return ['AAPL', 'MSFT', 'NVDA', 'TSLA'];
 };
 
 export const addToWatchlist = async (uid: string, symbol: string) => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  await updateDoc(docRef, {
-    watchlist: arrayUnion(symbol.toUpperCase()),
-    updatedAt: new Date().toISOString()
-  });
+  console.log("Mock: Added to watchlist", symbol);
 };
 
 export const removeFromWatchlist = async (uid: string, symbol: string) => {
-  const docRef = doc(db, COLLECTION_NAME, uid);
-  await updateDoc(docRef, {
-    watchlist: arrayRemove(symbol.toUpperCase()),
-    updatedAt: new Date().toISOString()
-  });
+  console.log("Mock: Removed from watchlist", symbol);
 };

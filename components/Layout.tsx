@@ -28,8 +28,9 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
   const handleLogout = async () => {
     try {
       await signOut(auth);
-    } catch (err) {
-      console.error('Logout error', err);
+      // App.tsx onAuthStateChanged will handle redirection
+    } catch (error) {
+      console.error("Logout Error:", error);
     }
   };
 
@@ -73,7 +74,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
               </div>
               <div className="overflow-hidden">
                 <div className="flex items-center space-x-2">
-                  <p className="text-xs font-bold text-white truncate">{user?.displayName || 'Active User'}</p>
+                  <p className="text-xs font-bold text-white truncate">{user?.displayName || 'Investor'}</p>
                   {isAdmin && (
                     <span className="text-[7px] font-black bg-indigo-500 text-white px-1 py-0.5 rounded tracking-tighter uppercase">Admin</span>
                   )}
@@ -85,10 +86,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
           
           <button 
             onClick={handleLogout}
-            className="w-full flex items-center justify-center space-x-2 px-4 py-3 rounded-xl text-white bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 shadow-lg shadow-rose-900/20 transition-all text-sm font-bold active:scale-[0.98]"
+            className="w-full flex items-center justify-center space-x-2 px-4 py-3 rounded-xl text-white bg-slate-800 hover:bg-slate-700 shadow-lg border border-slate-700 transition-all text-sm font-bold active:scale-[0.98]"
           >
             <span>Sign Out</span>
-            <span className="text-lg">🚪</span>
+            <span className="text-lg">↪️</span>
           </button>
         </div>
       </aside>
@@ -121,10 +122,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
             <div className="flex items-center space-x-2">
               <button 
                 onClick={handleLogout}
-                className="flex items-center space-x-2 px-3 py-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-all border border-slate-200 hover:border-rose-100 group"
+                className="flex items-center space-x-2 px-3 py-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-all border border-slate-200 hover:border-indigo-100 group"
               >
-                <span className="text-xs font-bold uppercase tracking-wider hidden sm:inline">Sign Out</span>
-                <span className="text-lg group-hover:rotate-12 transition-transform">🚪</span>
+                <span className="text-xs font-bold uppercase tracking-wider hidden sm:inline">Log Out</span>
+                <span className="text-lg group-hover:translate-x-1 transition-transform duration-300">➜</span>
               </button>
             </div>
           </div>

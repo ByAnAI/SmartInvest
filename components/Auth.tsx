@@ -1,33 +1,49 @@
+
 import React, { useState, useEffect } from 'react';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
-  signInWithPopup,
-  sendEmailVerification,
   sendPasswordResetEmail,
-  signOut,
-  reload
+  signInWithPopup,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence
 } from 'firebase/auth';
 import { auth, googleProvider } from '../services/firebase';
-import { initializeUser, getUserMetadata } from '../services/firestoreService';
 
 interface AuthProps {
   onClose: () => void;
+  onVerificationSuccess?: (user: any) => void;
   initialError?: string | null;
+  onHardReset?: () => void;
+  initialMode?: 'login' | 'signup';
 }
 
 type AuthMode = 'login' | 'signup' | 'forgot-password';
 
-const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
-  const [mode, setMode] = useState<AuthMode>('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login' }) => {
+  const [mode, setMode] = useState<AuthMode>(initialMode);
+  
+  // Initialize email from local storage if exists
+  const [email, setEmail] = useState(() => {
+    return localStorage.getItem('rememberedEmail') || '';
+  });
+  
+  // Initialize password from local storage if exists
+  const [password, setPassword] = useState(() => {
+    return localStorage.getItem('rememberedPassword') || '';
+  });
+
+  const [showPassword, setShowPassword] = useState(false);
+  
+  // Default rememberMe to true if we have a saved email
+  const [rememberMe, setRememberMe] = useState(() => {
+    return !!localStorage.getItem('rememberedEmail');
+  });
+
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
-  const [verificationRequired, setVerificationRequired] = useState(false);
-  const [registeredEmail, setRegisteredEmail] = useState('');
-  const [checkingStatus, setCheckingStatus] = useState(false);
 
   useEffect(() => {
     if (initialError) {
@@ -35,23 +51,23 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
     }
   }, [initialError]);
 
-  const handleCheckVerification = async () => {
-    if (!auth.currentUser) return;
-    setCheckingStatus(true);
+  const handleGoogleSignIn = async () => {
+    setLoading(true);
+    setError('');
+    
     try {
-      await reload(auth.currentUser);
-      if (auth.currentUser.emailVerified) {
-        // User has confirmed! Now initialize them in Firestore to ensure they are in the DB.
-        await initializeUser(auth.currentUser.uid, auth.currentUser.email, auth.currentUser.displayName);
-        onClose(); // Close modal and log them directly into the dashboard
-      } else {
-        setError("Account not yet confirmed. Please click the link in your email.");
-        setTimeout(() => setError(''), 3000);
-      }
+      // Apply persistence based on the checkbox state even for Google Sign In
+      await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
+      await signInWithPopup(auth, googleProvider);
+      onClose();
     } catch (err: any) {
-      setError("Status check failed: " + err.message);
-    } finally {
-      setCheckingStatus(false);
+      console.error("Google Auth Error:", err);
+      if (err.code === 'auth/popup-closed-by-user') {
+        setError("Sign-in cancelled.");
+      } else {
+        setError("Google Sign-in failed. Please try again.");
+      }
+      setLoading(false);
     }
   };
 
@@ -63,264 +79,190 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError }) => {
     
     try {
       if (mode === 'login') {
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
-
-        if (!user.emailVerified) {
-          await sendEmailVerification(user);
-          setRegisteredEmail(email);
-          setVerificationRequired(true);
-          setLoading(false);
-          return;
-        }
-        
-        await initializeUser(user.uid, user.email, user.displayName);
-        const metadata = await getUserMetadata(user.uid);
-        
-        if (metadata?.status === 'disabled') {
-          setError("Your institutional access has been suspended.");
-          await signOut(auth);
-          setLoading(false);
-          return;
+        // Handle Remember Me (Local Storage for Email AND Password)
+        if (rememberMe) {
+          localStorage.setItem('rememberedEmail', email);
+          localStorage.setItem('rememberedPassword', password);
+        } else {
+          localStorage.removeItem('rememberedEmail');
+          localStorage.removeItem('rememberedPassword');
         }
 
+        // Set persistence before signing in
+        await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
+        await signInWithEmailAndPassword(auth, email, password);
+        // Successful login automatically triggers onAuthStateChanged in App.tsx
         onClose();
 
       } else if (mode === 'signup') {
-        try {
-          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-          const user = userCredential.user;
-          
-          if (user) {
-            await sendEmailVerification(user);
-            setRegisteredEmail(email);
-            setVerificationRequired(true);
-          }
-        } catch (err: any) {
-          if (err.code === 'auth/email-already-in-use') {
-            setError("This account already exists. Please sign in instead.");
-            setTimeout(() => setMode('login'), 2000);
-          } else if (err.code === 'auth/weak-password') {
-            setError("Password must be at least 6 characters.");
-          } else {
-            setError(err.message || "Registration failed.");
-          }
-        }
+        // Signup defaults to local persistence usually, but we can be explicit or leave default
+        await createUserWithEmailAndPassword(auth, email, password);
+        // Successful signup automatically signs them in and triggers onAuthStateChanged in App.tsx
+        onClose();
+        
       } else if (mode === 'forgot-password') {
         await sendPasswordResetEmail(auth, email);
-        setSuccessMsg("Reset link sent! Please check your email.");
+        setSuccessMsg("Recovery link dispatched. Check your inbox.");
         setTimeout(() => setMode('login'), 3000);
       }
     } catch (err: any) {
-      if (mode === 'login') {
-        setError("Invalid email or password.");
+      console.error("Auth Error Code:", err.code);
+      
+      // Specific error mapping as requested
+      if (mode === 'signup' && (err.code === 'auth/email-already-in-use')) {
+        setError("User already exists. Please sign in");
+      } else if (
+        mode === 'login' && 
+        (err.code === 'auth/invalid-credential' || 
+         err.code === 'auth/user-not-found' || 
+         err.code === 'auth/wrong-password' ||
+         err.code === 'auth/invalid-email')
+      ) {
+        setError("Email or password is incorrect");
       } else {
-        setError(err.message || "An unexpected error occurred.");
+        setError(err.message || "Authentication failed.");
       }
     } finally {
       setLoading(false);
     }
   };
-
-  const handleGoogleSignIn = async () => {
-    setLoading(true);
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      if (result.user) {
-        if (result.user.emailVerified) {
-          await initializeUser(result.user.uid, result.user.email, result.user.displayName);
-          const metadata = await getUserMetadata(result.user.uid);
-          if (metadata?.status === 'disabled') {
-            setError("Your access has been suspended.");
-            await signOut(auth);
-          } else {
-            onClose();
-          }
-        } else {
-          await sendEmailVerification(result.user);
-          setRegisteredEmail(result.user.email || '');
-          setVerificationRequired(true);
-        }
-      }
-    } catch (err: any) {
-      setError(err.message || 'Google Sign-In failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (verificationRequired) {
-    return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-300">
-        <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden relative border border-slate-200 p-10 text-center">
-          <div className="mb-8 inline-flex items-center justify-center w-20 h-20 bg-indigo-50 text-indigo-600 rounded-full text-3xl animate-bounce">
-            📧
-          </div>
-          <h2 className="text-2xl font-bold text-slate-900 mb-4">Account Verification</h2>
-          <p className="text-slate-600 mb-8 leading-relaxed font-medium">
-            A message link is sent to the email <span className="text-indigo-600 font-bold">{registeredEmail}</span>. <br/>
-            <span className="text-indigo-500 mt-2 block font-bold">Please confirm.</span>
-          </p>
-          
-          {error && (
-            <div className="mb-4 p-3 text-xs bg-rose-50 text-rose-600 rounded-xl font-bold animate-pulse">
-              {error}
-            </div>
-          )}
-
-          <div className="space-y-4">
-            <button
-              onClick={handleCheckVerification}
-              disabled={checkingStatus}
-              className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold hover:bg-indigo-600 transition-all active:scale-95 shadow-xl disabled:opacity-50"
-            >
-              {checkingStatus ? 'Verifying Status...' : "I've Confirmed, Log Me In"}
-            </button>
-            <button
-              onClick={async () => {
-                await signOut(auth);
-                setVerificationRequired(false);
-                setMode('login');
-              }}
-              className="w-full bg-slate-100 text-slate-500 py-3 rounded-2xl font-bold hover:bg-slate-200 transition-all text-xs"
-            >
-              Back to Login
-            </button>
-            <p className="text-[10px] text-slate-400 font-medium">
-              Check your spam folder if you don't see the link. Once confirmed, you will be directly logged in and added to our database.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
-      <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden relative border border-slate-200">
-        <button 
-          onClick={onClose}
-          className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-2 transition-colors"
-        >
-          ✕
-        </button>
+      <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden relative border border-slate-100">
+        <button onClick={onClose} className="absolute top-6 right-6 text-slate-400 hover:text-slate-900 p-2 transition-colors">✕</button>
 
-        <div className="p-8">
-          <div className="text-center mb-8">
-            <h2 className="text-3xl font-bold text-slate-900">
-              {mode === 'login' ? 'Investor Login' : mode === 'signup' ? 'Create Vault' : 'Account Recovery'}
+        <div className="p-10">
+          <div className="text-center mb-10">
+            <h2 className="text-4xl font-black text-slate-900 tracking-tight">
+              {mode === 'login' ? 'Authorize' : mode === 'signup' ? 'Join Vault' : 'Recovery'}
             </h2>
-            <p className="text-slate-500 mt-2 text-sm font-medium">
-              {mode === 'forgot-password' ? 'Restore access to your secure portal' : 'Access Institutional Wealth OS'}
-            </p>
+            <p className="text-slate-400 mt-2 font-black uppercase tracking-[0.2em] text-[10px]">Institutional Wealth OS</p>
           </div>
 
           {error && (
-            <div className="mb-6 p-4 text-sm rounded-xl text-center font-bold animate-in fade-in zoom-in duration-200 border bg-rose-50 border-rose-100 text-rose-600">
+            <div className="mb-6 p-4 text-xs rounded-2xl border bg-rose-50 border-rose-100 text-rose-600 font-bold text-center">
               ⚠️ {error}
             </div>
           )}
+          {successMsg && <div className="mb-6 p-4 text-xs rounded-2xl border bg-emerald-50 border-emerald-100 text-emerald-600 font-bold text-center">✓ {successMsg}</div>}
 
-          {successMsg && (
-            <div className="mb-6 p-4 text-sm rounded-xl text-center font-bold animate-in fade-in zoom-in duration-200 border bg-emerald-50 border-emerald-100 text-emerald-600">
-              ✓ {successMsg}
-            </div>
-          )}
-
-          {mode !== 'forgot-password' && (
-            <>
-              <button
-                onClick={handleGoogleSignIn}
-                disabled={loading}
-                className="w-full flex items-center justify-center space-x-3 py-3 border border-slate-200 rounded-xl hover:bg-slate-50 transition-all font-semibold mb-6 disabled:opacity-50"
-              >
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-                <span>Continue with Google</span>
-              </button>
-
-              <div className="relative mb-6">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-100"></div>
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-white px-3 text-slate-400 font-bold tracking-widest">Or Use Email</span>
-                </div>
-              </div>
-            </>
-          )}
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Corporate Email</label>
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Email Identifier</label>
               <input
                 type="email"
                 required
+                name="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all font-medium"
-                placeholder="investor@secure.com"
+                className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
+                placeholder="investor@vault.com"
               />
             </div>
+
             {mode !== 'forgot-password' && (
-              <div>
-                <div className="flex justify-between items-center mb-1.5 ml-1">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Access Password</label>
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center ml-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Password</label>
                   {mode === 'login' && (
-                    <button 
-                      type="button"
-                      onClick={() => setMode('forgot-password')}
-                      className="text-xs font-bold text-indigo-600 hover:underline"
-                    >
-                      Forgot?
-                    </button>
+                    <button type="button" onClick={() => setMode('forgot-password')} className="text-[10px] font-black text-emerald-600 hover:underline">RECOVER</button>
                   )}
                 </div>
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all font-medium"
-                  placeholder="••••••••"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    required
+                    name="password"
+                    autoComplete={mode === 'login' ? "current-password" : "new-password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
+                    placeholder="••••••••"
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-emerald-600 text-xs font-bold"
+                  >
+                    {showPassword ? "HIDE" : "SHOW"}
+                  </button>
+                </div>
               </div>
             )}
+
+            {/* Remember Me Checkbox */}
+            {mode === 'login' && (
+              <div className="flex items-center ml-1 py-1">
+                <input
+                  id="remember-me"
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 text-emerald-600 bg-slate-50 border-slate-300 rounded focus:ring-emerald-500 focus:ring-2 accent-emerald-600 cursor-pointer"
+                />
+                <label htmlFor="remember-me" className="ml-2 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer select-none">
+                  Remember Me
+                </label>
+              </div>
+            )}
+
             <button
               disabled={loading}
-              className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-indigo-600 shadow-xl shadow-slate-200 transition-all active:scale-95 disabled:opacity-50 mt-2"
+              className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-2xl transition-all active:scale-95 disabled:opacity-50 mt-4"
             >
-              {loading ? (
-                <span className="flex items-center justify-center">
-                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin mr-2"></span>
-                  Security Check...
-                </span>
-              ) : mode === 'login' ? 'Authorize Dashboard' : mode === 'signup' ? 'Create Account' : 'Request Reset Link'}
+              {loading ? 'Processing...' : mode === 'login' ? 'Authorize Dashboard' : mode === 'signup' ? 'Create Vault' : 'Send Link'}
             </button>
           </form>
 
-          <div className="mt-8 text-center text-sm text-slate-500 font-medium">
-            {mode === 'forgot-password' ? (
-              <button 
-                onClick={() => setMode('login')}
-                className="text-indigo-600 font-bold hover:underline"
+          {mode !== 'forgot-password' && (
+            <>
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-100"></div>
+                </div>
+                <div className="relative flex justify-center text-sm">
+                  <span className="px-2 bg-white text-slate-300 text-[9px] font-black uppercase tracking-widest">Or</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={loading}
+                className="w-full bg-white border-2 border-slate-100 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-50 hover:border-slate-200 transition-all flex items-center justify-center space-x-3 active:scale-95"
               >
-                Return to Login
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    fill="#4285F4"
+                  />
+                  <path
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    fill="#34A853"
+                  />
+                  <path
+                    d="M5.84 14.12c-.22-.66-.35-1.36-.35-2.12s.13-1.46.35-2.12V7.04H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.96l3.66-2.84z"
+                    fill="#FBBC05"
+                  />
+                  <path
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.04l3.66 2.84c.87-2.6 3.3-4.5 6.16-4.5z"
+                    fill="#EA4335"
+                  />
+                </svg>
+                <span>Sign in with Google</span>
               </button>
-            ) : (
-              <>
-                {mode === 'login' ? "New to institutional wealth?" : "Already an member?"}
-                <button 
-                  onClick={() => {
-                    setMode(mode === 'login' ? 'signup' : 'login');
-                    setError('');
-                    setSuccessMsg('');
-                  }}
-                  className="ml-2 text-indigo-600 font-bold hover:underline"
-                >
-                  {mode === 'login' ? 'Create Account' : 'Login here'}
-                </button>
-              </>
-            )}
+            </>
+          )}
+
+          <div className="mt-8 text-center">
+            <button 
+              onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); }}
+              className="text-[10px] font-black text-emerald-600 hover:underline uppercase tracking-widest"
+            >
+              {mode === 'login' ? 'Establish New Profile' : 'Return to Authorization'}
+            </button>
           </div>
         </div>
       </div>
