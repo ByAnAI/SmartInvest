@@ -7,7 +7,9 @@ import {
   signInWithPopup,
   setPersistence,
   browserLocalPersistence,
-  browserSessionPersistence
+  browserSessionPersistence,
+  sendEmailVerification,
+  signOut
 } from 'firebase/auth';
 import { auth, googleProvider } from '../services/firebase';
 
@@ -44,6 +46,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [verificationSent, setVerificationSent] = useState(false);
 
   useEffect(() => {
     if (initialError) {
@@ -58,7 +61,15 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
     try {
       // Apply persistence based on the checkbox state even for Google Sign In
       await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
-      await signInWithPopup(auth, googleProvider);
+      const res = await signInWithPopup(auth, googleProvider);
+      
+      // Enforce email verification for Google Sign In as well (though usually verified)
+      if (!res.user.emailVerified) {
+        await signOut(auth);
+        setVerificationSent(true);
+        return;
+      }
+
       onClose();
     } catch (err: any) {
       console.error("Google Auth Error:", err);
@@ -90,23 +101,41 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
         // Set persistence before signing in
         await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
-        await signInWithEmailAndPassword(auth, email, password);
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        
+        // Check Email Verification
+        if (!userCredential.user.emailVerified) {
+          await signOut(auth);
+          setVerificationSent(true);
+          setLoading(false);
+          return;
+        }
+
         // Successful login automatically triggers onAuthStateChanged in App.tsx
         onClose();
 
       } else if (mode === 'signup') {
-        // Signup defaults to local persistence usually, but we can be explicit or leave default
-        await createUserWithEmailAndPassword(auth, email, password);
-        // Successful signup automatically signs them in and triggers onAuthStateChanged in App.tsx
-        onClose();
+        // Signup
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        
+        // Send Verification Email
+        await sendEmailVerification(userCredential.user);
+        
+        // Sign out immediately to prevent auto-login
+        await signOut(auth);
+        
+        setVerificationSent(true);
+        setLoading(false);
         
       } else if (mode === 'forgot-password') {
         await sendPasswordResetEmail(auth, email);
         setSuccessMsg("Recovery link dispatched. Check your inbox.");
         setTimeout(() => setMode('login'), 3000);
+        setLoading(false);
       }
     } catch (err: any) {
       console.error("Auth Error Code:", err.code);
+      setLoading(false);
       
       // Specific error mapping as requested
       if (mode === 'signup' && (err.code === 'auth/email-already-in-use')) {
@@ -122,10 +151,38 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       } else {
         setError(err.message || "Authentication failed.");
       }
-    } finally {
-      setLoading(false);
     }
   };
+
+  if (verificationSent) {
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
+        <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden relative border border-slate-100 p-10 text-center">
+          <button onClick={onClose} className="absolute top-6 right-6 text-slate-400 hover:text-slate-900 p-2 transition-colors">✕</button>
+          
+          <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6 text-2xl shadow-sm">
+            ✉️
+          </div>
+          
+          <h2 className="text-2xl font-black text-slate-900 tracking-tight mb-4">Verify Your Email</h2>
+          
+          <p className="text-slate-500 font-medium leading-relaxed mb-8">
+            We have sent you a verification email to <br/>
+            <span className="font-bold text-slate-900">{email}</span>.
+            <br/><br/>
+            Please verify it and log in.
+          </p>
+
+          <button 
+            onClick={() => { setVerificationSent(false); setMode('login'); }}
+            className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-xl transition-all active:scale-95"
+          >
+            Log In
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">

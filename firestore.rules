@@ -23,15 +23,27 @@ service cloud.firestore {
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
-    // USER PROFILES
+    // USER PROFILES & NESTED COLLECTIONS
     match /users/{userId} {
-      // Explicitly allow all operations for owner to prevent 'permission-denied' on first create
       allow create, update, delete, get, list: if isOwner(userId);
-      // Allow admins to access any profile
       allow read, write: if isMasterAdmin() || isPromotedAdmin();
+      
+      // Nested collections (My Files, My Notes, Team Members)
+      match /folders/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+      match /files/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+      match /notes/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
+      match /teamMembers/{document=**} {
+        allow read, write: if isOwner(userId);
+      }
     }
 
-    // USER DATA (Portfolio, Watchlist)
+    // USER DATA (Portfolio, Watchlist - Legacy)
     match /user_data/{userId} {
       allow create, update, delete, get, list: if isOwner(userId);
       allow read, write: if isMasterAdmin() || isPromotedAdmin();

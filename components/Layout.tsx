@@ -18,6 +18,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
     { id: 'analysis', label: 'AI Analysis', icon: '🧠' },
     { id: 'portfolio', label: 'Portfolio', icon: '💼' },
     { id: 'news', label: 'Market News', icon: '🗞️' },
+    // New Sections
+    { id: 'files', label: 'My Files', icon: '📁' },
+    { id: 'notes', label: 'My Notes', icon: '📝' },
+    { id: 'team', label: 'Team Members', icon: '👥' },
   ];
 
   // Add admin tab if user has privileges
@@ -45,7 +49,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
           <p className="text-xs text-slate-400 mt-1 uppercase tracking-widest font-semibold">Wealth OS</p>
         </div>
         
-        <nav className="flex-1 p-4 space-y-2 mt-4">
+        <nav className="flex-1 p-4 space-y-2 mt-4 overflow-y-auto custom-scrollbar">
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -138,17 +142,17 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
       </main>
 
       {/* Mobile Nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-3 z-50 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.1)]">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around p-3 z-50 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.1)] overflow-x-auto">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex flex-col items-center space-y-1 p-2 rounded-xl transition-all ${
+            className={`flex flex-col items-center space-y-1 p-2 rounded-xl transition-all min-w-[60px] ${
               activeTab === tab.id ? 'text-indigo-600 bg-indigo-50 shadow-inner' : 'text-slate-400'
             }`}
           >
             <span className="text-xl">{tab.icon}</span>
-            <span className="text-[10px] font-bold tracking-tight">{tab.label}</span>
+            <span className="text-[10px] font-bold tracking-tight whitespace-nowrap">{tab.label.split(' ')[0]}</span>
           </button>
         ))}
       </nav>

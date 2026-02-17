@@ -11,6 +11,9 @@ import Portfolio from './components/Portfolio';
 import AdminDashboard from './components/AdminDashboard';
 import LandingPage from './components/LandingPage';
 import Auth from './components/Auth';
+import MyFiles from './components/MyFiles';
+import MyNotes from './components/MyNotes';
+import TeamMembers from './components/TeamMembers';
 import { UserMetadata } from './types';
 
 const App: React.FC = () => {
@@ -28,7 +31,8 @@ const App: React.FC = () => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setLoading(true);
       try {
-        if (currentUser) {
+        // STRICT CHECK: Only allow access if user is present AND email is verified
+        if (currentUser && currentUser.emailVerified) {
           setUser(currentUser);
           // We are not saving profile data to DB yet as requested, 
           // but we initialize the mock service for the UI to function.
@@ -39,6 +43,9 @@ const App: React.FC = () => {
           );
           setUserMetadata(metadata);
         } else {
+          // Block access for unverified users. 
+          // Note: Auth.tsx handles the explicit signOut calls during the login/signup interaction
+          // to prompt the verification screen. Here we ensure they don't see the dashboard.
           setUser(null);
           setUserMetadata(null);
         }
@@ -58,9 +65,12 @@ const App: React.FC = () => {
     setShowAuth(true);
   };
 
-  const renderContent = () => {
-    const isAdmin = false; 
+  // Logic to determine admin status: 
+  // 1. Hard check for specific master email
+  // 2. Database role check
+  const isAdmin = user?.email === 'idris.elfeghi@byanai.com' || userMetadata?.role === 'admin';
 
+  const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
         return <Dashboard />;
@@ -70,6 +80,12 @@ const App: React.FC = () => {
         return <NewsSection />;
       case 'portfolio':
         return <Portfolio />;
+      case 'files':
+        return <MyFiles />;
+      case 'notes':
+        return <MyNotes />;
+      case 'team':
+        return <TeamMembers />;
       case 'admin':
         return isAdmin ? <AdminDashboard /> : <Dashboard />;
       default:
@@ -106,7 +122,7 @@ const App: React.FC = () => {
     <Layout 
       activeTab={activeTab} 
       setActiveTab={setActiveTab} 
-      isAdmin={false}
+      isAdmin={isAdmin}
     >
       <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
         {renderContent()}

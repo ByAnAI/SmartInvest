@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { getAllUsers, updateUserStatus, updateUserRole, deleteUserRecord, purgeUsers } from '../services/firestoreService';
+import { getAllUsers, updateUserStatus, updateUserRole, deleteUserRecord, purgeUsers, batchUploadMarketData } from '../services/firestoreService';
 import { UserMetadata } from '../types';
 import { auth } from '../services/firebase';
+import * as XLSX from 'xlsx';
 
 const AdminDashboard: React.FC = () => {
   const [users, setUsers] = useState<UserMetadata[]>([]);
@@ -12,6 +13,11 @@ const AdminDashboard: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isPurging, setIsPurging] = useState(false);
 
+  // Market Data State
+  const [selectedMarket, setSelectedMarket] = useState('SP500');
+  const [uploadingMarket, setUploadingMarket] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+
   const currentUser = auth.currentUser;
 
   const fetchUsers = async (forceRefresh = false) => {
@@ -19,14 +25,10 @@ const AdminDashboard: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      console.log("AdminDashboard: Initializing synchronization sequence...");
-      
       const data = await getAllUsers();
-      console.log(`AdminDashboard: Registry sync complete. Found ${data.length} records.`);
       setUsers(data);
     } catch (err: any) {
       console.error("AdminDashboard: Access Error:", err);
-      
       let errorMessage = "Access Denied.";
       if (err.code === 'permission-denied') {
         errorMessage = `Security Policy Restriction: Access for ${currentUser?.email} was rejected by Cloud Rules.`;
@@ -48,6 +50,69 @@ const AdminDashboard: React.FC = () => {
     setSuccess(msg);
     setTimeout(() => setSuccess(null), 3000);
   };
+
+  // --- Market Data Upload Logic ---
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setFile(e.target.files[0]);
+    }
+  };
+
+  const processExcel = async () => {
+    if (!file) return alert("Please select an Excel file first.");
+    setUploadingMarket(true);
+    setError(null);
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const data = e.target?.result;
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+        const assetsToUpload: { symbol: string, name: string }[] = [];
+
+        // Map columns flexibly
+        jsonData.forEach((row: any) => {
+          // Check various common column names
+          const symbol = row['Ticker'] || row['Symbol'] || row['symbol'] || row['ticker'];
+          const name = row['Name'] || row['Company'] || row['name'] || row['company'];
+
+          if (symbol && name) {
+            assetsToUpload.push({ 
+              symbol: String(symbol).toUpperCase().trim(), 
+              name: String(name).trim() 
+            });
+          }
+        });
+
+        if (assetsToUpload.length === 0) {
+          throw new Error("No valid data found. Ensure columns are named 'Ticker' and 'Name'.");
+        }
+
+        console.log(`Uploading ${assetsToUpload.length} entries to ${selectedMarket}...`);
+        await batchUploadMarketData(selectedMarket, assetsToUpload);
+        showFeedback(`Successfully uploaded ${assetsToUpload.length} assets to ${selectedMarket} database.`);
+        setFile(null);
+        // Reset file input value
+        const fileInput = document.getElementById('excel-upload') as HTMLInputElement;
+        if(fileInput) fileInput.value = "";
+
+      } catch (err: any) {
+        console.error("Upload failed", err);
+        setError("Upload Failed: " + err.message);
+      } finally {
+        setUploadingMarket(false);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+
+  // --- User Management Logic ---
 
   const handleToggleStatus = async (uid: string, currentStatus: string) => {
     if (uid === currentUser?.uid) return alert("System Integrity Check: You cannot disable your own primary administrative session.");
@@ -118,16 +183,12 @@ const AdminDashboard: React.FC = () => {
   }
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6 pb-20">
+    <div className="max-w-7xl mx-auto space-y-8 pb-20">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-900 p-8 rounded-3xl text-white shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 right-0 p-8 opacity-5 text-9xl">🛡️</div>
         <div className="relative z-10">
           <h2 className="text-3xl font-black tracking-tight">System Authority</h2>
           <p className="text-slate-400 mt-2 max-w-lg font-medium">Root-level directory for institutional identity management and network oversight.</p>
-          <div className="mt-4 flex items-center space-x-2 text-[10px] text-indigo-400 font-bold uppercase tracking-widest bg-white/5 w-fit px-3 py-1 rounded-full border border-white/5">
-            <span>Logged as:</span>
-            <span className="text-white">{currentUser?.email}</span>
-          </div>
         </div>
         <div className="relative z-10 mt-6 md:mt-0">
           <button 
@@ -136,46 +197,77 @@ const AdminDashboard: React.FC = () => {
             className="group flex items-center space-x-3 px-6 py-3 bg-white/10 hover:bg-white/20 border border-white/10 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all"
           >
             <span className={isSyncing ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}>🔄</span>
-            <span>{isSyncing ? 'Authorizing Token...' : 'Force Registry Sync'}</span>
+            <span>{isSyncing ? 'Authorizing...' : 'Sync Registry'}</span>
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="bg-rose-50 border border-rose-100 p-8 rounded-3xl animate-in fade-in slide-in-from-top-4 duration-500 shadow-xl shadow-rose-900/5">
-          <div className="flex items-start space-x-4">
-            <div className="text-5xl">🚫</div>
-            <div className="flex-1">
-              <h4 className="font-bold text-rose-900 text-xl">Identity Verification Failure</h4>
-              <p className="text-rose-600 text-sm font-medium mt-2 leading-relaxed whitespace-pre-line">{error}</p>
-              <div className="mt-6 flex flex-wrap gap-3">
-                <button 
-                  onClick={() => fetchUsers(true)}
-                  className="bg-rose-600 text-white px-6 py-3 rounded-2xl text-xs font-bold uppercase tracking-widest hover:bg-rose-700 transition-all shadow-lg shadow-rose-900/20 active:scale-95"
-                >
-                  Retry Authorization
-                </button>
-              </div>
-            </div>
-          </div>
+        <div className="bg-rose-50 border border-rose-100 p-6 rounded-3xl animate-in fade-in slide-in-from-top-4 duration-500 shadow-xl shadow-rose-900/5">
+           <h4 className="font-bold text-rose-900 text-lg">Operation Failed</h4>
+           <p className="text-rose-600 text-sm font-medium mt-1">{error}</p>
         </div>
       )}
 
       {success && (
         <div className="bg-emerald-50 border border-emerald-100 text-emerald-600 p-4 rounded-2xl text-center font-bold text-sm animate-in fade-in duration-300">
-          ✓ Directive Processed Successfully
+          ✓ {success}
         </div>
       )}
+
+      {/* --- MARKET DATA UPLOAD SECTION --- */}
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
+        <div className="flex justify-between items-center mb-6">
+           <div>
+             <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Market Data Ingestion</h3>
+             <p className="text-xs text-slate-400 font-bold mt-1">Upload Excel sheets (.xlsx) to populate market databases.</p>
+           </div>
+           <div className="text-3xl opacity-20">📊</div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end bg-slate-50 p-6 rounded-2xl border border-slate-200/60">
+           <div className="space-y-2">
+             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Target Database</label>
+             <select 
+               value={selectedMarket}
+               onChange={(e) => setSelectedMarket(e.target.value)}
+               className="w-full px-5 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 appearance-none"
+             >
+               <option value="SP500">S&P 500</option>
+               <option value="NASDAQ">Nasdaq</option>
+               <option value="ASIA">Asian Markets</option>
+               <option value="CRYPTO">Cryptocurrency</option>
+               <option value="COMMODITY">Commodities</option>
+             </select>
+           </div>
+           
+           <div className="space-y-2">
+             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Source File (.xlsx)</label>
+             <input 
+               id="excel-upload"
+               type="file" 
+               accept=".xlsx, .xls"
+               onChange={handleFileChange}
+               className="w-full text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-black file:uppercase file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 text-slate-500 font-medium cursor-pointer"
+             />
+           </div>
+
+           <button 
+             onClick={processExcel}
+             disabled={uploadingMarket || !file}
+             className="w-full py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+           >
+             {uploadingMarket ? 'Ingesting Data...' : 'Process & Upload'}
+           </button>
+        </div>
+        <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
+      </div>
 
       {!error && (
         <>
           <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
             <div className="p-6 border-b border-slate-50 bg-slate-50/30 flex justify-between items-center">
               <h3 className="font-bold text-slate-800 uppercase tracking-widest text-xs">Identity Registry ({users.length})</h3>
-              <div className="flex items-center space-x-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active Firestore Stream</span>
-              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left">
@@ -184,7 +276,6 @@ const AdminDashboard: React.FC = () => {
                     <th className="px-8 py-5">Identity Profile</th>
                     <th className="px-8 py-5">System Role</th>
                     <th className="px-8 py-5">Current Status</th>
-                    <th className="px-8 py-5">Last Activity</th>
                     <th className="px-8 py-5 text-right">Directives</th>
                   </tr>
                 </thead>
@@ -236,10 +327,6 @@ const AdminDashboard: React.FC = () => {
                           {user.status}
                         </button>
                       </td>
-                      <td className="px-8 py-5">
-                        <p className="text-xs text-slate-400 font-bold">{new Date(user.lastLogin).toLocaleDateString()}</p>
-                        <p className="text-[10px] text-slate-300 font-medium uppercase tracking-tighter">{new Date(user.lastLogin).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-                      </td>
                       <td className="px-8 py-5 text-right">
                         <button 
                           onClick={() => handleDeleteUser(user.uid)}
@@ -251,13 +338,6 @@ const AdminDashboard: React.FC = () => {
                       </td>
                     </tr>
                   ))}
-                  {users.length === 0 && !loading && !error && (
-                    <tr>
-                      <td colSpan={5} className="px-8 py-20 text-center text-slate-400 font-bold uppercase tracking-widest text-xs">
-                        No identities found in the institutional registry.
-                      </td>
-                    </tr>
-                  )}
                 </tbody>
               </table>
             </div>

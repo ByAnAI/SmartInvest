@@ -1,8 +1,8 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import StockChart from './StockChart';
-import { StockData, PortfolioItem } from '../types';
-import { addStock, getPortfolio, getWatchlist, addToWatchlist, removeFromWatchlist } from '../services/firestoreService';
+import { StockData, PortfolioItem, MarketAsset } from '../types';
+import { addStock, getPortfolio, getWatchlist, addToWatchlist, removeFromWatchlist, getAllMarketAssets } from '../services/firestoreService';
 import { auth } from '../services/firebase';
 
 const INITIAL_MOCK_STOCKS: Record<string, StockData> = {
@@ -78,13 +78,19 @@ const INITIAL_MOCK_STOCKS: Record<string, StockData> = {
 
 const Dashboard: React.FC = () => {
   const [marketStocks, setMarketStocks] = useState<Record<string, StockData>>(INITIAL_MOCK_STOCKS);
+  const [availableStocks, setAvailableStocks] = useState<MarketAsset[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('AAPL');
   const [feedback, setFeedback] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>([]);
-  const [newTicker, setNewTicker] = useState('');
+  
+  // Search & Dropdown State
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
   const [isAddingTicker, setIsAddingTicker] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
   const [lastUpdate, setLastUpdate] = useState<string>(new Date().toLocaleTimeString());
   const [tickerToRemove, setTickerToRemove] = useState<string | null>(null);
   
@@ -99,14 +105,16 @@ const Dashboard: React.FC = () => {
         // Ensure all watchlisted symbols exist in marketStocks
         watchlist.forEach(sym => {
           if (!next[sym]) {
+            const stockInfo = availableStocks.find(s => s.symbol === sym) || { name: `${sym} Asset`, symbol: sym, market: 'UNKNOWN' };
+            // Generate pseudo-random realistic values for Market Cap and PE
             next[sym] = {
               symbol: sym,
-              name: `${sym} Asset`,
+              name: stockInfo.name,
               price: 100 + Math.random() * 50,
               change: 0,
               changePercent: 0,
-              marketCap: 'N/A',
-              peRatio: 'N/A',
+              marketCap: (Math.random() * 2 + 0.1).toFixed(2) + 'T',
+              peRatio: (Math.random() * 50 + 10).toFixed(1),
               history: []
             };
           }
@@ -128,16 +136,17 @@ const Dashboard: React.FC = () => {
         return next;
       });
       setLastUpdate(new Date().toLocaleTimeString());
-    }, 15000);
+    }, 5000); // Faster update for demo
 
     return () => clearInterval(interval);
-  }, [watchlist]);
+  }, [watchlist, availableStocks]);
 
   // Initial data fetch
   useEffect(() => {
     const fetchData = async () => {
       if (user) {
         try {
+          // Fetch user specific data
           const [portfolioItems, userWatchlist] = await Promise.all([
             getPortfolio(user.uid),
             getWatchlist(user.uid)
@@ -148,6 +157,22 @@ const Dashboard: React.FC = () => {
           if (userWatchlist.length > 0) {
             setSelectedSymbol(userWatchlist[0]);
           }
+
+          // Fetch Market Assets from Admin Databases
+          const assets = await getAllMarketAssets();
+          if (assets.length > 0) {
+            setAvailableStocks(assets);
+          } else {
+            // Fallback for demo if no database uploaded yet
+            setAvailableStocks([
+              { symbol: 'AAPL', name: 'Apple Inc.', market: 'SP500' },
+              { symbol: 'MSFT', name: 'Microsoft Corp.', market: 'SP500' },
+              { symbol: 'GOOGL', name: 'Alphabet Inc.', market: 'SP500' },
+              { symbol: 'NVDA', name: 'NVIDIA Corp.', market: 'SP500' },
+              { symbol: 'TSLA', name: 'Tesla, Inc.', market: 'SP500' }
+            ]);
+          }
+
         } catch (e) {
           console.error("Dashboard: Error fetching user data", e);
         }
@@ -156,9 +181,31 @@ const Dashboard: React.FC = () => {
     fetchData();
   }, [user]);
 
+  // Handle click outside to close dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Filter stocks for dropdown
+  const filteredStocks = useMemo(() => {
+    if (!searchQuery) return [];
+    const query = searchQuery.toUpperCase();
+    return availableStocks.filter(stock => {
+      const matchesSearch = stock.symbol.includes(query) || stock.name.toUpperCase().includes(query);
+      const notInWatchlist = !watchlist.includes(stock.symbol);
+      return matchesSearch && notInWatchlist;
+    }).slice(0, 10); // Limit results
+  }, [searchQuery, watchlist, availableStocks]);
+
   const selectedStock = marketStocks[selectedSymbol] || {
     symbol: selectedSymbol,
-    name: `${selectedSymbol} Asset`,
+    name: availableStocks.find(s => s.symbol === selectedSymbol)?.name || `${selectedSymbol} Asset`,
     price: 0.00,
     change: 0,
     changePercent: 0,
@@ -191,22 +238,17 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const handleAddTicker = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user || !newTicker) return;
-    const ticker = newTicker.toUpperCase().trim();
-    if (watchlist.includes(ticker)) {
-      setFeedback("Ticker already in watchlist.");
-      return;
-    }
-
+  const handleAddTicker = async (stock: MarketAsset) => {
+    if (!user) return;
+    
     setIsAddingTicker(true);
     try {
-      await addToWatchlist(user.uid, ticker);
-      setWatchlist(prev => [...prev, ticker]);
-      setNewTicker('');
-      setFeedback(`${ticker} added to watchlist.`);
-      setSelectedSymbol(ticker);
+      await addToWatchlist(user.uid, stock.symbol);
+      setWatchlist(prev => [...prev, stock.symbol]);
+      setSearchQuery('');
+      setShowDropdown(false);
+      setFeedback(`${stock.symbol} added to watchlist.`);
+      setSelectedSymbol(stock.symbol);
     } catch (e) {
       setFeedback("Failed to update watchlist.");
     } finally {
@@ -355,18 +397,42 @@ const Dashboard: React.FC = () => {
         <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 h-fit">
           <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-6 px-2">Institutional Watchlist</h3>
           
-          <form onSubmit={handleAddTicker} className="mb-6 flex gap-2 px-2">
-            <input 
-              type="text" 
-              value={newTicker}
-              onChange={(e) => setNewTicker(e.target.value)}
-              placeholder="Enter Ticker (e.g. AMZN)"
-              className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-[10px] font-black tracking-widest focus:ring-2 focus:ring-indigo-500 outline-none uppercase text-slate-700"
-            />
-            <button disabled={isAddingTicker} className="bg-slate-900 text-white px-5 py-3 rounded-2xl text-xs font-bold hover:bg-indigo-600 transition-all active:scale-95">+</button>
-          </form>
+          <div className="mb-6 relative z-50" ref={dropdownRef}>
+             <input 
+               type="text" 
+               value={searchQuery}
+               onFocus={() => setShowDropdown(true)}
+               onChange={(e) => { setSearchQuery(e.target.value); setShowDropdown(true); }}
+               placeholder="Add Ticker (e.g. AMZN)"
+               className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-[10px] font-black tracking-widest focus:ring-2 focus:ring-indigo-500 outline-none uppercase text-slate-700 placeholder:normal-case placeholder:font-bold"
+             />
+             
+             {showDropdown && searchQuery && (
+               <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-100 rounded-2xl shadow-2xl overflow-hidden max-h-64 overflow-y-auto">
+                 {filteredStocks.length > 0 ? (
+                   filteredStocks.map(stock => (
+                     <div 
+                       key={stock.symbol}
+                       onClick={() => handleAddTicker(stock)}
+                       className="px-4 py-3 hover:bg-slate-50 cursor-pointer flex justify-between items-center group"
+                     >
+                       <div>
+                         <p className="font-black text-xs text-slate-800">{stock.symbol}</p>
+                         <p className="text-[9px] text-slate-400 uppercase tracking-wide">{stock.name}</p>
+                       </div>
+                       <span className="text-indigo-600 text-xs opacity-0 group-hover:opacity-100 font-bold transition-opacity">+ Add</span>
+                     </div>
+                   ))
+                 ) : (
+                   <div className="p-4 text-center text-[10px] text-slate-400 font-bold uppercase tracking-wide">
+                     No matches found or already added.
+                   </div>
+                 )}
+               </div>
+             )}
+          </div>
 
-          <div className="space-y-3">
+          <div className="space-y-3 relative z-0">
             {watchlist.length === 0 ? (
               <div className="py-10 text-center space-y-2 opacity-50">
                 <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.2em]">Registry Cleared</p>
@@ -374,7 +440,7 @@ const Dashboard: React.FC = () => {
               </div>
             ) : (
               watchlist.map((symbol) => {
-                const stock = marketStocks[symbol];
+                const stock = marketStocks[symbol] || { symbol, name: 'Loading...', price: 0, change: 0, changePercent: 0 };
                 const isActive = selectedSymbol.toUpperCase() === symbol.toUpperCase();
                 return (
                   <div

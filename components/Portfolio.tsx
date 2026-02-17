@@ -46,6 +46,7 @@ const Portfolio: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isAdding, setIsAdding] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<string | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   
@@ -127,16 +128,21 @@ const Portfolio: React.FC = () => {
     }
   };
 
-  const handleRemove = async (sym: string) => {
-    if (!user || !window.confirm(`Are you sure you want to remove ${sym}?`)) return;
-    setIsDeleting(sym);
+  const handleInitiateRemove = (sym: string) => {
+    setItemToDelete(sym);
+  };
+
+  const handleConfirmRemove = async () => {
+    if (!user || !itemToDelete) return;
+    setIsDeleting(itemToDelete);
     try {
-      await removeStock(user.uid, sym);
+      await removeStock(user.uid, itemToDelete);
       await loadPortfolio();
     } catch (e: any) {
       setError(e.message);
     } finally {
       setIsDeleting(null);
+      setItemToDelete(null);
     }
   };
 
@@ -151,7 +157,33 @@ const Portfolio: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6 max-w-6xl mx-auto">
+    <div className="space-y-6 max-w-6xl mx-auto relative">
+      {/* Delete Confirmation Modal */}
+      {itemToDelete && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-sm w-full border border-slate-100 animate-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-black text-slate-900 mb-2">Confirm Asset Liquidation</h3>
+            <p className="text-slate-500 text-sm font-medium mb-8 leading-relaxed">
+              Are you sure you want to remove <span className="font-bold text-slate-900 bg-slate-100 px-1 rounded">{itemToDelete}</span> from your portfolio? This will delete the record from the database.
+            </p>
+            <div className="flex space-x-3">
+              <button 
+                onClick={() => setItemToDelete(null)} 
+                className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleConfirmRemove} 
+                className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-200 transition-all active:scale-95"
+              >
+                Liquidate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-slate-900 p-8 rounded-3xl text-white shadow-2xl relative overflow-hidden group">
           <div className="absolute top-0 right-0 p-4 opacity-10 text-6xl group-hover:scale-110 transition-transform">🏦</div>
@@ -285,7 +317,7 @@ const Portfolio: React.FC = () => {
                       </td>
                       <td className="px-8 py-5 text-right">
                         <button 
-                          onClick={() => handleRemove(item.symbol)}
+                          onClick={() => handleInitiateRemove(item.symbol)}
                           disabled={isDeleting === item.symbol}
                           className="p-3 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-2xl transition-all"
                         >
