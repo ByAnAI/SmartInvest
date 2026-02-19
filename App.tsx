@@ -37,8 +37,8 @@ const App: React.FC = () => {
           // We are not saving profile data to DB yet as requested, 
           // but we initialize the mock service for the UI to function.
           const metadata = await initializeUser(
-            currentUser.uid, 
-            currentUser.email, 
+            currentUser.uid,
+            currentUser.email,
             currentUser.displayName
           );
           setUserMetadata(metadata);
@@ -109,8 +109,8 @@ const App: React.FC = () => {
       <>
         <LandingPage onAuth={handleAuthOpen} />
         {showAuth && (
-          <Auth 
-            onClose={() => setShowAuth(false)} 
+          <Auth
+            onClose={() => setShowAuth(false)}
             initialMode={authMode}
           />
         )}
@@ -119,9 +119,9 @@ const App: React.FC = () => {
   }
 
   return (
-    <Layout 
-      activeTab={activeTab} 
-      setActiveTab={setActiveTab} 
+    <Layout
+      activeTab={activeTab}
+      setActiveTab={setActiveTab}
       isAdmin={isAdmin}
     >
       <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">

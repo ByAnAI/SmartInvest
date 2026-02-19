@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
-import { 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   sendPasswordResetEmail,
   signInWithPopup,
   setPersistence,
@@ -25,19 +25,19 @@ type AuthMode = 'login' | 'signup' | 'forgot-password';
 
 const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login' }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
-  
+
   // Initialize email from local storage if exists
   const [email, setEmail] = useState(() => {
     return localStorage.getItem('rememberedEmail') || '';
   });
-  
+
   // Initialize password from local storage if exists
   const [password, setPassword] = useState(() => {
     return localStorage.getItem('rememberedPassword') || '';
   });
 
   const [showPassword, setShowPassword] = useState(false);
-  
+
   // Default rememberMe to true if we have a saved email
   const [rememberMe, setRememberMe] = useState(() => {
     return !!localStorage.getItem('rememberedEmail');
@@ -57,12 +57,12 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setError('');
-    
+
     try {
       // Apply persistence based on the checkbox state even for Google Sign In
       await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
       const res = await signInWithPopup(auth, googleProvider);
-      
+
       // Enforce email verification for Google Sign In as well (though usually verified)
       if (!res.user.emailVerified) {
         await signOut(auth);
@@ -87,7 +87,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
     setLoading(true);
     setError('');
     setSuccessMsg('');
-    
+
     try {
       if (mode === 'login') {
         // Handle Remember Me (Local Storage for Email AND Password)
@@ -102,7 +102,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         // Set persistence before signing in
         await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
         const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        
+
         // Check Email Verification
         if (!userCredential.user.emailVerified) {
           await signOut(auth);
@@ -117,18 +117,31 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       } else if (mode === 'signup') {
         // Signup
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        
-        // Send Verification Email
-        await sendEmailVerification(userCredential.user);
-        
+
+        // Construct ActionCodeSettings to ensure the verification link brings the user back to the app
+        const actionCodeSettings = {
+          // URL you want to redirect back to. The domain (www.example.com) for this
+          // URL must be whitelisted in the Firebase Console.
+          url: window.location.origin,
+          // This must be true.
+          handleCodeInApp: true,
+        };
+
+        // Send Verification Email with ActionCodeSettings
+        await sendEmailVerification(userCredential.user, actionCodeSettings);
+
         // Sign out immediately to prevent auto-login
         await signOut(auth);
-        
+
         setVerificationSent(true);
         setLoading(false);
-        
+
       } else if (mode === 'forgot-password') {
-        await sendPasswordResetEmail(auth, email);
+        const actionCodeSettings = {
+          url: window.location.origin,
+          handleCodeInApp: true,
+        };
+        await sendPasswordResetEmail(auth, email, actionCodeSettings);
         setSuccessMsg("Recovery link dispatched. Check your inbox.");
         setTimeout(() => setMode('login'), 3000);
         setLoading(false);
@@ -136,16 +149,16 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
     } catch (err: any) {
       console.error("Auth Error Code:", err.code);
       setLoading(false);
-      
+
       // Specific error mapping as requested
       if (mode === 'signup' && (err.code === 'auth/email-already-in-use')) {
         setError("User already exists. Please sign in");
       } else if (
-        mode === 'login' && 
-        (err.code === 'auth/invalid-credential' || 
-         err.code === 'auth/user-not-found' || 
-         err.code === 'auth/wrong-password' ||
-         err.code === 'auth/invalid-email')
+        mode === 'login' &&
+        (err.code === 'auth/invalid-credential' ||
+          err.code === 'auth/user-not-found' ||
+          err.code === 'auth/wrong-password' ||
+          err.code === 'auth/invalid-email')
       ) {
         setError("Email or password is incorrect");
       } else {
@@ -159,25 +172,25 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
         <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden relative border border-slate-100 p-10 text-center">
           <button onClick={onClose} className="absolute top-6 right-6 text-slate-400 hover:text-slate-900 p-2 transition-colors">✕</button>
-          
+
           <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6 text-2xl shadow-sm">
             ✉️
           </div>
-          
+
           <h2 className="text-2xl font-black text-slate-900 tracking-tight mb-4">Verify Your Email</h2>
-          
+
           <p className="text-slate-500 font-medium leading-relaxed mb-8">
-            We have sent you a verification email to <br/>
+            A verification link has been sent to <br />
             <span className="font-bold text-slate-900">{email}</span>.
-            <br/><br/>
-            Please verify it and log in.
+            <br /><br />
+            Check your inbox (and spam). Once you click the link in the email, you can return here and log in.
           </p>
 
-          <button 
+          <button
             onClick={() => { setVerificationSent(false); setMode('login'); }}
             className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-xl transition-all active:scale-95"
           >
-            Log In
+            I've Verified, Continue to Log In
           </button>
         </div>
       </div>
@@ -238,7 +251,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
                     className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
                     placeholder="••••••••"
                   />
-                  <button 
+                  <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-emerald-600 text-xs font-bold"
@@ -314,7 +327,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
           )}
 
           <div className="mt-8 text-center">
-            <button 
+            <button
               onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); }}
               className="text-[10px] font-black text-emerald-600 hover:underline uppercase tracking-widest"
             >

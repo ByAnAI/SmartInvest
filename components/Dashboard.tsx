@@ -1,491 +1,294 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import StockChart from './StockChart';
-import { StockData, PortfolioItem, MarketAsset } from '../types';
-import { addStock, getPortfolio, getWatchlist, addToWatchlist, removeFromWatchlist, getAllMarketAssets } from '../services/firestoreService';
+import React, { useState } from 'react';
 import { auth } from '../services/firebase';
 
-const INITIAL_MOCK_STOCKS: Record<string, StockData> = {
-  'AAPL': {
-    symbol: 'AAPL',
-    name: 'Apple Inc.',
-    price: 182.63,
-    change: 1.45,
-    changePercent: 0.8,
-    marketCap: '2.84T',
-    peRatio: '28.4',
-    history: [
-      { time: '09:00', price: 180.20 },
-      { time: '10:00', price: 181.50 },
-      { time: '11:00', price: 180.80 },
-      { time: '12:00', price: 182.10 },
-      { time: '13:00', price: 181.90 },
-      { time: '14:00', price: 183.20 },
-      { time: '15:00', price: 182.63 },
-    ]
-  },
-  'NVDA': {
-    symbol: 'NVDA',
-    name: 'NVIDIA Corp.',
-    price: 726.13,
-    change: 14.50,
-    changePercent: 2.04,
-    marketCap: '1.79T',
-    peRatio: '95.2',
-    history: [
-      { time: '09:00', price: 710.20 },
-      { time: '10:00', price: 715.50 },
-      { time: '11:00', price: 722.80 },
-      { time: '12:00', price: 718.10 },
-      { time: '13:00', price: 725.90 },
-      { time: '14:00', price: 730.20 },
-      { time: '15:00', price: 726.13 },
-    ]
-  },
-  'TSLA': {
-    symbol: 'TSLA',
-    name: 'Tesla, Inc.',
-    price: 193.57,
-    change: -2.31,
-    changePercent: -1.18,
-    marketCap: '617.2B',
-    peRatio: '42.8',
-    history: [
-      { time: '09:00', price: 196.20 },
-      { time: '10:00', price: 195.50 },
-      { time: '11:00', price: 194.80 },
-      { time: '12:00', price: 194.10 },
-      { time: '13:00', price: 193.90 },
-      { time: '14:00', price: 192.20 },
-      { time: '15:00', price: 193.57 },
-    ]
-  },
-  'MSFT': {
-    symbol: 'MSFT',
-    name: 'Microsoft Corp.',
-    price: 415.50,
-    change: 2.10,
-    changePercent: 0.51,
-    marketCap: '3.08T',
-    peRatio: '36.5',
-    history: [
-      { time: '09:00', price: 412.00 },
-      { time: '12:00', price: 414.50 },
-      { time: '15:00', price: 415.50 },
-    ]
-  }
-};
-
 const Dashboard: React.FC = () => {
-  const [marketStocks, setMarketStocks] = useState<Record<string, StockData>>(INITIAL_MOCK_STOCKS);
-  const [availableStocks, setAvailableStocks] = useState<MarketAsset[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState<string>('AAPL');
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [watchlist, setWatchlist] = useState<string[]>([]);
-  const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>([]);
-  
-  // Search & Dropdown State
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [isAddingTicker, setIsAddingTicker] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const today = new Date();
+  const dateStr = today.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  });
 
-  const [lastUpdate, setLastUpdate] = useState<string>(new Date().toLocaleTimeString());
-  const [tickerToRemove, setTickerToRemove] = useState<string | null>(null);
-  
-  const user = auth.currentUser;
+  const mainIndices = [
+    { name: 'S&P 500', change: '+0.56%', price: '$6,881.31', color: 'text-emerald-500' },
+    { name: 'Nasdaq 100', change: '+0.80%', price: '$24,898.87', color: 'text-emerald-500' },
+    { name: 'Russell 2000', change: '-0.12%', price: '$2,142.45', color: 'text-rose-500' },
+  ];
 
-  // Real-time Simulation: Updated to handle dynamic tickers in market refresh
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setMarketStocks(prev => {
-        const next = { ...prev };
-        
-        // Ensure all watchlisted symbols exist in marketStocks
-        watchlist.forEach(sym => {
-          if (!next[sym]) {
-            const stockInfo = availableStocks.find(s => s.symbol === sym) || { name: `${sym} Asset`, symbol: sym, market: 'UNKNOWN' };
-            // Generate pseudo-random realistic values for Market Cap and PE
-            next[sym] = {
-              symbol: sym,
-              name: stockInfo.name,
-              price: 100 + Math.random() * 50,
-              change: 0,
-              changePercent: 0,
-              marketCap: (Math.random() * 2 + 0.1).toFixed(2) + 'T',
-              peRatio: (Math.random() * 50 + 10).toFixed(1),
-              history: []
-            };
-          }
-        });
-
-        Object.keys(next).forEach(symbol => {
-          const current = next[symbol];
-          const volatility = 0.002;
-          const change = current.price * (Math.random() * volatility * 2 - volatility);
-          const newPrice = Number((current.price + change).toFixed(2));
-          
-          next[symbol] = {
-            ...current,
-            price: newPrice,
-            change: Number((current.change + change).toFixed(2)),
-            changePercent: Number(((current.change + change) / (newPrice - (current.change + change)) * 100).toFixed(2))
-          };
-        });
-        return next;
-      });
-      setLastUpdate(new Date().toLocaleTimeString());
-    }, 5000); // Faster update for demo
-
-    return () => clearInterval(interval);
-  }, [watchlist, availableStocks]);
-
-  // Initial data fetch
-  useEffect(() => {
-    const fetchData = async () => {
-      if (user) {
-        try {
-          // Fetch user specific data
-          const [portfolioItems, userWatchlist] = await Promise.all([
-            getPortfolio(user.uid),
-            getWatchlist(user.uid)
-          ]);
-          setPortfolioSymbols(portfolioItems.map(i => i.symbol));
-          setWatchlist(userWatchlist);
-          
-          if (userWatchlist.length > 0) {
-            setSelectedSymbol(userWatchlist[0]);
-          }
-
-          // Fetch Market Assets from Admin Databases
-          const assets = await getAllMarketAssets();
-          if (assets.length > 0) {
-            setAvailableStocks(assets);
-          } else {
-            // Fallback for demo if no database uploaded yet
-            setAvailableStocks([
-              { symbol: 'AAPL', name: 'Apple Inc.', market: 'SP500' },
-              { symbol: 'MSFT', name: 'Microsoft Corp.', market: 'SP500' },
-              { symbol: 'GOOGL', name: 'Alphabet Inc.', market: 'SP500' },
-              { symbol: 'NVDA', name: 'NVIDIA Corp.', market: 'SP500' },
-              { symbol: 'TSLA', name: 'Tesla, Inc.', market: 'SP500' }
-            ]);
-          }
-
-        } catch (e) {
-          console.error("Dashboard: Error fetching user data", e);
-        }
-      }
-    };
-    fetchData();
-  }, [user]);
-
-  // Handle click outside to close dropdown
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setShowDropdown(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  // Filter stocks for dropdown
-  const filteredStocks = useMemo(() => {
-    if (!searchQuery) return [];
-    const query = searchQuery.toUpperCase();
-    return availableStocks.filter(stock => {
-      const matchesSearch = stock.symbol.includes(query) || stock.name.toUpperCase().includes(query);
-      const notInWatchlist = !watchlist.includes(stock.symbol);
-      return matchesSearch && notInWatchlist;
-    }).slice(0, 10); // Limit results
-  }, [searchQuery, watchlist, availableStocks]);
-
-  const selectedStock = marketStocks[selectedSymbol] || {
-    symbol: selectedSymbol,
-    name: availableStocks.find(s => s.symbol === selectedSymbol)?.name || `${selectedSymbol} Asset`,
-    price: 0.00,
-    change: 0,
-    changePercent: 0,
-    marketCap: 'N/A',
-    peRatio: 'N/A',
-    history: []
+  type AssetRow = {
+    name: string;
+    trend1M: 'up' | 'down' | 'neutral' | 'widening';
+    trend3M: 'up' | 'down' | 'neutral';
+    regime: string;
+    note?: string;
   };
 
-  const handleSelectStock = (symbol: string) => {
-    setSelectedSymbol(symbol);
-  };
-
-  const handleSaveToPortfolio = async () => {
-    if (!user) return;
-    setIsSaving(true);
-    try {
-      const item: PortfolioItem = {
-        symbol: selectedStock.symbol,
-        shares: 1,
-        avgCost: selectedStock.price
-      };
-      await addStock(user.uid, item);
-      setPortfolioSymbols(prev => [...prev, selectedStock.symbol]);
-      setFeedback(`${selectedStock.symbol} added to portfolio.`);
-    } catch (err: any) {
-      setFeedback(`Error: ${err.message}`);
-    } finally {
-      setIsSaving(false);
-      setTimeout(() => setFeedback(null), 3000);
+  const sections: { title: string; subtitle: string; assets: AssetRow[]; insight?: string }[] = [
+    {
+      title: 'EQUITIES (Risk Appetite)',
+      subtitle: 'Institutional Risk Benchmarks',
+      assets: [
+        { name: 'S&P 500 (Broad US)', trend1M: 'up', trend3M: 'up', regime: 'Risk-On' },
+        { name: 'NASDAQ-100 (Growth/Liq)', trend1M: 'up', trend3M: 'up', regime: 'Easing Liquidity' },
+        { name: 'Russell 2000 (Domestic/Credit)', trend1M: 'neutral', trend3M: 'down', regime: 'Credit Sensitivity' },
+      ],
+      insight: 'If Russell underperforms S&P → tightening liquidity. If Nasdaq leads → easing liquidity / duration bid.'
+    },
+    {
+      title: 'DERIVATIVES (Equity & Vol)',
+      subtitle: 'Leveraged Exposure & Hedging',
+      assets: [
+        { name: 'S&P 500 Futures (ES)', trend1M: 'up', trend3M: 'up', regime: 'Institutional Beta' },
+        { name: 'Nasdaq Futures (NQ)', trend1M: 'up', trend3M: 'up', regime: 'Growth Momentum' },
+        { name: 'Russell Futures (RTY)', trend1M: 'neutral', trend3M: 'down', regime: 'Reflation Bet' },
+        { name: 'Equity Options', trend1M: 'up', trend3M: 'neutral', regime: 'Tail Hedging' },
+        { name: 'VIX Futures & Options', trend1M: 'down', trend3M: 'up', regime: 'Sentiment Buffer' },
+      ],
+      insight: 'High OTM Put volume in ES/NQ indicates growing demand for tail protection.'
+    },
+    {
+      title: 'FX DERIVATIVES',
+      subtitle: 'Macro Flows & Dollar Funding',
+      assets: [
+        { name: 'EUR/USD Futures', trend1M: 'down', trend3M: 'down', regime: 'Dollar Strength' },
+        { name: 'USD/JPY Futures', trend1M: 'up', trend3M: 'up', regime: 'Carry Trade' },
+        { name: 'FX Options', trend1M: 'up', trend3M: 'neutral', regime: 'FX Uncertainty' },
+        { name: 'Currency Swaps', trend1M: 'down', trend3M: 'down', regime: 'Funding Stress' },
+      ],
+      insight: 'JPY futures weakness often correlates with risk-on carry trade expansion.'
+    },
+    {
+      title: 'COMMODITIES COMPLEX',
+      subtitle: 'Precious, Industrial & Global Demand',
+      assets: [
+        { name: 'Gold', trend1M: 'up', trend3M: 'up', regime: 'Monetary Hedge' },
+        { name: 'Silver', trend1M: 'up', trend3M: 'neutral', regime: 'Growth Reflation' },
+        { name: 'Platinum', trend1M: 'neutral', trend3M: 'down', regime: 'Industrial Value' },
+        { name: 'Palladium', trend1M: 'down', trend3M: 'down', regime: 'Auto Catalyst' },
+        { name: 'Copper ("Dr. Copper")', trend1M: 'neutral', trend3M: 'down', regime: 'Growth Signal' },
+        { name: 'Aluminum', trend1M: 'up', trend3M: 'neutral', regime: 'Supply Stress' },
+        { name: 'Nickel', trend1M: 'down', trend3M: 'down', regime: 'EV Slowdown' },
+        { name: 'Zinc', trend1M: 'neutral', trend3M: 'down', regime: 'Steel Cycle' },
+      ],
+      insight: 'Silver outperforming Gold → growth reflation. Copper rising + yields rising = growth acceleration.'
+    },
+    {
+      title: 'CREDIT & LIQUIDITY',
+      subtitle: 'The Leading Indicator Layer',
+      assets: [
+        { name: 'Investment Grade Spread', trend1M: 'down', trend3M: 'down', regime: 'Funding Stress' },
+        { name: 'High Yield Spread', trend1M: 'widening', trend3M: 'down', regime: 'Recession Warning' },
+        { name: 'TED Spread', trend1M: 'neutral', trend3M: 'up', regime: 'Banking Stress' },
+        { name: 'M2 Money Supply', trend1M: 'up', trend3M: 'up', regime: 'Asset Inflation' },
+        { name: 'Fed Balance Sheet Size', trend1M: 'down', trend3M: 'down', regime: 'Quant. Tightening' },
+      ],
+      insight: 'Institutional reality: Credit moves first. Equities move second.'
     }
+  ];
+
+  const TrendIcon = ({ trend }: { trend: AssetRow['trend1M'] }) => {
+    if (trend === 'up') return <span className="text-emerald-500 font-bold">🟢</span>;
+    if (trend === 'down') return <span className="text-rose-500 font-bold">🔴</span>;
+    if (trend === 'widening') return <span className="text-rose-600 font-bold flex items-center justify-center space-x-1">🔴<span className="text-[8px] uppercase font-black">widening</span></span>;
+    return <span className="text-amber-500 font-bold">🟡</span>;
   };
-
-  const handleAddTicker = async (stock: MarketAsset) => {
-    if (!user) return;
-    
-    setIsAddingTicker(true);
-    try {
-      await addToWatchlist(user.uid, stock.symbol);
-      setWatchlist(prev => [...prev, stock.symbol]);
-      setSearchQuery('');
-      setShowDropdown(false);
-      setFeedback(`${stock.symbol} added to watchlist.`);
-      setSelectedSymbol(stock.symbol);
-    } catch (e) {
-      setFeedback("Failed to update watchlist.");
-    } finally {
-      setIsAddingTicker(false);
-      setTimeout(() => setFeedback(null), 3000);
-    }
-  };
-
-  const handleInitiateRemove = (e: React.MouseEvent, symbol: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setTickerToRemove(symbol);
-  };
-
-  const handleConfirmRemove = async () => {
-    if (!user || !tickerToRemove) return;
-    const symbol = tickerToRemove;
-    
-    try {
-      await removeFromWatchlist(user.uid, symbol);
-      
-      const updatedList = watchlist.filter(s => s.toUpperCase() !== symbol.toUpperCase());
-      setWatchlist(updatedList);
-      setFeedback(`${symbol} purged successfully.`);
-
-      // Logic for fallback selection if viewing deleted item
-      if (selectedSymbol.toUpperCase() === symbol.toUpperCase()) {
-        if (updatedList.length > 0) {
-          setSelectedSymbol(updatedList[0]);
-        } else {
-          // Fallback to first available initial mock stock if watchlist is wiped
-          setSelectedSymbol(Object.keys(INITIAL_MOCK_STOCKS)[0]);
-        }
-      }
-    } catch (err: any) {
-      setFeedback("Directive failed: Connection lost.");
-    } finally {
-      setTickerToRemove(null);
-      setTimeout(() => setFeedback(null), 3000);
-    }
-  };
-
-  const isAlreadyInPortfolio = portfolioSymbols.includes(selectedStock.symbol);
 
   return (
-    <div className="space-y-6 relative pb-10">
-      {/* Custom Confirmation Modal */}
-      {tickerToRemove && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-sm w-full border border-slate-100 animate-in zoom-in-95 duration-200">
-            <h3 className="text-lg font-black text-slate-900 mb-2">Confirm Removal</h3>
-            <p className="text-slate-500 text-sm font-medium mb-8 leading-relaxed">
-              Are you sure you want to remove <span className="font-bold text-slate-900 bg-slate-100 px-1 rounded">{tickerToRemove}</span> from your watchlist?
-            </p>
-            <div className="flex space-x-3">
-              <button 
-                onClick={() => setTickerToRemove(null)} 
-                className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors"
-              >
-                No
-              </button>
-              <button 
-                onClick={handleConfirmRemove} 
-                className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-200 transition-all active:scale-95"
-              >
-                Yes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+    <div className="max-w-7xl mx-auto space-y-4 pb-12 animate-in fade-in slide-in-from-bottom-4 duration-700">
 
-      {feedback && (
-        <div className="fixed top-24 right-8 z-[100] bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl border border-slate-700 flex items-center space-x-3 animate-in fade-in slide-in-from-right-4">
-          <p className="text-xs font-black uppercase tracking-widest">{feedback}</p>
+      {/* Branded Header Section */}
+      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-4 flex flex-col items-center text-center space-y-2">
+        <div className="flex items-center space-x-1">
+          <span className="text-3xl font-black tracking-tighter text-amber-500">Smart</span>
+          <span className="text-3xl font-black tracking-tighter text-blue-600 italic">Invest</span>
+          <span className="text-3xl font-light tracking-tighter text-blue-800 ml-1">AI</span>
         </div>
-      )}
-
-      <div className="flex justify-between items-center mb-2">
-        <div className="flex items-center space-x-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Market Pulse Active: {lastUpdate}</p>
+        <div className="flex items-center space-x-3 text-slate-500 text-[10px] font-medium uppercase tracking-widest">
+          <span>{dateStr}</span>
+          <span className="text-slate-300">|</span>
+          <a href="#" className="text-blue-600 hover:underline">View Online</a>
+          <span className="text-slate-300">|</span>
+          <a href="#" className="text-blue-600 hover:underline">Start Free Trial</a>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <h3 className="text-slate-500 text-xs font-black uppercase tracking-widest">S&P 500</h3>
-          <p className="text-2xl font-black mt-1 text-slate-900">5,088.80</p>
-        </div>
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <h3 className="text-slate-500 text-xs font-black uppercase tracking-widest">Nasdaq</h3>
-          <p className="text-2xl font-black mt-1 text-slate-900">17,937.61</p>
-        </div>
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <h3 className="text-slate-500 text-xs font-black uppercase tracking-widest">Dow Jones</h3>
-          <p className="text-2xl font-black mt-1 text-slate-900">39,131.53</p>
-        </div>
+      {/* Main Market Indices */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {mainIndices.map((index) => (
+          <div key={index.name} className="bg-white border border-slate-100 rounded-2xl p-4 flex flex-col items-center text-center hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer group">
+            <h3 className="text-slate-500 text-[10px] font-black uppercase tracking-[0.2em] mb-1">{index.name}</h3>
+            <p className={`text-2xl font-black ${index.color} mb-1`}>{index.change}</p>
+            <p className="text-slate-900 font-bold text-sm tracking-tight">{index.price}</p>
+          </div>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 flex flex-col min-h-[500px]">
-          <div className="flex justify-between items-start mb-8">
-            <div className="flex items-center space-x-4">
-              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl font-black text-white shadow-xl transition-all duration-500 ${selectedStock.change >= 0 ? 'bg-emerald-600 shadow-emerald-500/20' : 'bg-rose-600 shadow-rose-500/20'}`}>
-                {selectedStock.symbol[0]}
+      {/* Comprehensive Market Data Sections */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 text-slate-900">
+        {sections.map((section) => (
+          <div
+            key={section.title}
+            className={`bg-white border border-slate-100 rounded-[1.5rem] shadow-sm overflow-hidden flex flex-col ${section.title === 'COMMODITIES COMPLEX' ? 'xl:col-span-2' : ''
+              }`}
+          >
+            <div className="p-4 border-b border-slate-50">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-sm font-black text-slate-900 tracking-tight uppercase tracking-wider">{section.title}</h2>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mt-0.5">{section.subtitle}</p>
+                </div>
+                <div className="bg-slate-50 px-2 py-0.5 rounded-full text-[8px] font-bold text-slate-400 uppercase tracking-tighter border border-slate-100">
+                  Live
+                </div>
               </div>
-              <div>
-                <h3 className="text-xl font-black text-slate-900">{selectedStock.name}</h3>
-                <p className="text-3xl font-black text-slate-900">${selectedStock.price.toFixed(2)}</p>
-              </div>
             </div>
-            <button 
-              onClick={handleSaveToPortfolio}
-              disabled={isSaving || isAlreadyInPortfolio}
-              className={`px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all shadow-lg ${isAlreadyInPortfolio ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95'}`}
-            >
-              {isSaving ? 'Syncing...' : isAlreadyInPortfolio ? 'In Portfolio' : 'Add to Vault'}
-            </button>
-          </div>
-          
-          <div className="flex-1 min-h-[300px]">
-            <StockChart data={selectedStock.history} color={selectedStock.change >= 0 ? "#10b981" : "#ef4444"} />
-          </div>
 
-          <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-6 pt-8 border-t border-slate-50">
-            <div>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Market Cap</p>
-              <p className="text-sm font-black text-slate-800">{selectedStock.marketCap}</p>
+            <div className="flex-1 overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50/50">
+                  <tr>
+                    <th className="px-8 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest w-1/3 text-slate-600">Asset</th>
+                    <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center text-slate-600">1M</th>
+                    <th className="px-4 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center text-slate-600">3M</th>
+                    <th className="px-8 py-2 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right text-slate-600">Regime</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {section.title === 'COMMODITIES COMPLEX' ? (
+                    // Specialized Grid-based non-table layout for dual columns
+                    <tr className="w-full">
+                      <td colSpan={4} className="p-0">
+                        <div className="grid grid-cols-1 md:grid-cols-2">
+                          {section.assets.map((asset, assetIdx) => (
+                            <div
+                              key={asset.name}
+                              className={`flex items-center justify-between p-2.5 px-6 hover:bg-slate-50 transition-colors group ${assetIdx % 2 === 0 ? 'md:border-r md:border-slate-50' : ''
+                                } ${assetIdx < section.assets.length - 2 ? 'border-b border-slate-50' : ''}`}
+                            >
+                              <div className="flex-1 min-w-0 mr-4">
+                                <span className="font-bold text-slate-700 text-[12px] group-hover:text-blue-600 transition-colors truncate block">{asset.name}</span>
+                              </div>
+                              <div className="flex items-center space-x-6 sm:space-x-8">
+                                <div className="flex items-center space-x-6 sm:space-x-8">
+                                  <div className="w-6 flex justify-center"><TrendIcon trend={asset.trend1M} /></div>
+                                  <div className="w-6 flex justify-center"><TrendIcon trend={asset.trend3M} /></div>
+                                </div>
+                                <div className="w-24 text-right">
+                                  <span className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase tracking-tighter inline-block whitespace-nowrap ${asset.regime.includes('Stress') || asset.regime.includes('Warning') || asset.regime.includes('Slowdown')
+                                    ? 'bg-rose-50 text-rose-600 border border-rose-100'
+                                    : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                                    }`}>
+                                    {asset.regime}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    section.assets.map((asset) => (
+                      <tr key={asset.name} className="hover:bg-slate-50/50 transition-colors group">
+                        <td className="px-8 py-5">
+                          <span className="font-bold text-slate-700 text-sm group-hover:text-blue-600 transition-colors">{asset.name}</span>
+                        </td>
+                        <td className="px-4 py-5 text-center">
+                          <TrendIcon trend={asset.trend1M} />
+                        </td>
+                        <td className="px-4 py-5 text-center">
+                          <TrendIcon trend={asset.trend3M} />
+                        </td>
+                        <td className="px-8 py-5 text-right">
+                          <span className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-tighter inline-block whitespace-nowrap ${asset.regime.includes('Stress') || asset.regime.includes('Warning') || asset.regime.includes('Tightening') || asset.regime.includes('Fear')
+                            ? 'bg-rose-50 text-rose-600 border border-rose-100'
+                            : asset.regime.includes('Risk-On') || asset.regime.includes('Inflation') || asset.regime.includes('Expanding') || asset.regime.includes('Momentum')
+                              ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                              : 'bg-blue-50 text-blue-600 border border-blue-100'
+                            }`}>
+                            {asset.regime}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
-            <div>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">P/E Ratio</p>
-              <p className="text-sm font-black text-slate-800">{selectedStock.peRatio}</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Div Yield</p>
-              <p className="text-sm font-black text-slate-800">1.42%</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Avg Volume</p>
-              <p className="text-sm font-black text-slate-800">54.2M</p>
-            </div>
-          </div>
-        </div>
 
-        <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 h-fit">
-          <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-6 px-2">Institutional Watchlist</h3>
-          
-          <div className="mb-6 relative z-50" ref={dropdownRef}>
-             <input 
-               type="text" 
-               value={searchQuery}
-               onFocus={() => setShowDropdown(true)}
-               onChange={(e) => { setSearchQuery(e.target.value); setShowDropdown(true); }}
-               placeholder="Add Ticker (e.g. AMZN)"
-               className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-[10px] font-black tracking-widest focus:ring-2 focus:ring-indigo-500 outline-none uppercase text-slate-700 placeholder:normal-case placeholder:font-bold"
-             />
-             
-             {showDropdown && searchQuery && (
-               <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-100 rounded-2xl shadow-2xl overflow-hidden max-h-64 overflow-y-auto">
-                 {filteredStocks.length > 0 ? (
-                   filteredStocks.map(stock => (
-                     <div 
-                       key={stock.symbol}
-                       onClick={() => handleAddTicker(stock)}
-                       className="px-4 py-3 hover:bg-slate-50 cursor-pointer flex justify-between items-center group"
-                     >
-                       <div>
-                         <p className="font-black text-xs text-slate-800">{stock.symbol}</p>
-                         <p className="text-[9px] text-slate-400 uppercase tracking-wide">{stock.name}</p>
-                       </div>
-                       <span className="text-indigo-600 text-xs opacity-0 group-hover:opacity-100 font-bold transition-opacity">+ Add</span>
-                     </div>
-                   ))
-                 ) : (
-                   <div className="p-4 text-center text-[10px] text-slate-400 font-bold uppercase tracking-wide">
-                     No matches found or already added.
-                   </div>
-                 )}
-               </div>
-             )}
-          </div>
-
-          <div className="space-y-3 relative z-0">
-            {watchlist.length === 0 ? (
-              <div className="py-10 text-center space-y-2 opacity-50">
-                <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.2em]">Registry Cleared</p>
-                <p className="text-[8px] text-slate-400 font-bold italic uppercase">Add assets to monitor market velocity</p>
-              </div>
-            ) : (
-              watchlist.map((symbol) => {
-                const stock = marketStocks[symbol] || { symbol, name: 'Loading...', price: 0, change: 0, changePercent: 0 };
-                const isActive = selectedSymbol.toUpperCase() === symbol.toUpperCase();
-                return (
-                  <div
-                    key={symbol}
-                    onClick={() => handleSelectStock(symbol)}
-                    className={`w-full flex items-center justify-between p-4 rounded-2xl transition-all border cursor-pointer group relative overflow-visible ${
-                      isActive ? 'border-indigo-600 bg-indigo-50/50 shadow-md ring-1 ring-indigo-600' : 'border-slate-50 hover:bg-slate-50 hover:border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-3 z-10">
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-xs shadow-sm ${ (stock?.change || 0) >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700' }`}>
-                        {symbol[0]}
-                      </div>
-                      <div>
-                        <p className="font-black text-slate-900 text-sm tracking-tight">{symbol}</p>
-                        <p className="text-[9px] text-slate-400 font-black uppercase tracking-widest truncate max-w-[80px]">{stock?.name || 'Loading...'}</p>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end pr-10 z-10">
-                      <p className="font-black text-slate-900 text-sm tracking-tighter">${stock?.price.toFixed(2) || '---'}</p>
-                      <p className={`text-[9px] font-black ${ (stock?.change || 0) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        {stock ? `${stock.change >= 0 ? '+' : ''}${stock.changePercent.toFixed(2)}%` : '---'}
-                      </p>
-                    </div>
-                    
-                    {/* Hardened Removal Button with Tooltip */}
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 z-30 group/del flex items-center">
-                      <div className="absolute right-full mr-3 px-3 py-2 bg-slate-900 text-white text-[8px] font-black uppercase tracking-widest rounded-xl opacity-0 group-hover/del:opacity-100 transition-all duration-300 pointer-events-none whitespace-nowrap shadow-2xl border border-slate-700 translate-x-2 group-hover/del:translate-x-0">
-                        Remove from Watchlist
-                      </div>
-                      <button 
-                        onClick={(e) => handleInitiateRemove(e, symbol)}
-                        className="text-slate-300 hover:text-rose-600 p-2 transition-all hover:scale-125 opacity-0 group-hover:opacity-100 bg-white/10 rounded-lg hover:bg-rose-50"
-                        title="Remove"
-                      >
-                        ✕
-                      </button>
-                    </div>
+            {section.insight && (
+              <div className="p-3 bg-slate-50 border-t border-slate-100">
+                <div className="flex space-x-2 items-start">
+                  <span className="text-blue-600 mt-0.5 font-bold text-[10px]">💡</span>
+                  <div>
+                    <p className="text-[9px] font-black text-blue-600 uppercase tracking-widest leading-none mb-1">Institutional Insight</p>
+                    <p className="text-[10px] text-slate-500 font-medium leading-tight italic">{section.insight}</p>
                   </div>
-                );
-              })
+                </div>
+              </div>
             )}
           </div>
+        ))}
+      </div>
+
+      {/* Institutional Interpretation Summary */}
+      <div className="bg-slate-900 rounded-[1.5rem] p-6 text-white shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-6 opacity-10">
+          <span className="text-6xl font-black uppercase tracking-tighter">Regime</span>
+        </div>
+
+        <div className="relative z-10 grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div>
+            <h2 className="text-xl font-black tracking-tighter mb-4 bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent uppercase">
+              Regime Interpretation
+            </h2>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <div className="flex items-center space-x-2 mb-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.5)]"></span>
+                  <p className="text-[9px] font-black uppercase tracking-[0.2em] text-emerald-400">Risk-On</p>
+                </div>
+                <ul className="space-y-1.5">
+                  {['Spreads Tightening', 'Copper Rising', 'Russell Outperforming'].map(item => (
+                    <li key={item} className="flex items-center text-[11px] font-bold text-slate-300">
+                      <span className="text-emerald-500 mr-2 text-[10px]">✦</span> {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center space-x-2 mb-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shadow-[0_0_15px_rgba(244,63,94,0.5)]"></span>
+                  <p className="text-[9px] font-black uppercase tracking-[0.2em] text-rose-400">Risk-Off</p>
+                </div>
+                <ul className="space-y-1.5">
+                  {['HY Widening', 'TED Spread Rising', 'Capital Flight'].map(item => (
+                    <li key={item} className="flex items-center text-[11px] font-bold text-slate-300">
+                      <span className="text-rose-500 mr-2 text-[10px]">✦</span> {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col justify-center text-center space-y-4 backdrop-blur-sm">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2">
+              <span className="text-indigo-400 text-[9px] font-black uppercase tracking-[0.2em]">Inflation Basis</span>
+              <span className="text-white text-[11px] font-black">Energy + Agri Rising</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-indigo-400 text-[9px] font-black uppercase tracking-[0.2em]">Growth Bias</span>
+              <span className="text-white text-[11px] font-black">Silver &gt; Gold</span>
+            </div>
+          </div>
         </div>
       </div>
+
     </div>
   );
 };
