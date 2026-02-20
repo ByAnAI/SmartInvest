@@ -9,21 +9,25 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   sendEmailVerification,
-  signOut
+  signOut,
+  applyActionCode,
+  confirmPasswordReset
 } from 'firebase/auth';
 import { auth, googleProvider } from '../services/firebase';
+import { markUserAsVerified } from '../services/firestoreService';
 
 interface AuthProps {
   onClose: () => void;
   onVerificationSuccess?: (user: any) => void;
   initialError?: string | null;
   onHardReset?: () => void;
-  initialMode?: 'login' | 'signup';
+  initialMode?: 'login' | 'signup' | 'forgot-password' | 'reset-password' | 'verify-email';
+  actionCode?: string;
 }
 
-type AuthMode = 'login' | 'signup' | 'forgot-password';
+type AuthMode = 'login' | 'signup' | 'forgot-password' | 'reset-password' | 'verify-email';
 
-const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login' }) => {
+const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login', actionCode }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
 
   // Initialize email from local storage if exists
@@ -36,6 +40,8 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
     return localStorage.getItem('rememberedPassword') || '';
   });
 
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   // Default rememberMe to true if we have a saved email
@@ -130,29 +136,55 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
-        // Send Password Reset Email - Simplified for reliability
-        await sendPasswordResetEmail(auth, email);
+        // Send Password Reset Email
+        const actionCodeSettings = {
+          url: window.location.origin, // Return to base URL which handles the action
+          handleCodeInApp: true,
+        };
+        await sendPasswordResetEmail(auth, email, actionCodeSettings);
         setSuccessMsg("Recovery link dispatched. Check your inbox.");
+        setTimeout(() => setMode('login'), 4000);
+        setLoading(false);
+      } else if (mode === 'reset-password') {
+        if (!actionCode) throw new Error("Missing reset code.");
+        if (newPassword !== confirmPassword) throw new Error("Passwords do not match.");
+
+        await confirmPasswordReset(auth, actionCode, newPassword);
+        setSuccessMsg("Password updated successfully. You can now log in.");
         setTimeout(() => setMode('login'), 3000);
+        setLoading(false);
+      } else if (mode === 'verify-email') {
+        if (!actionCode) throw new Error("Missing verification code.");
+
+        await applyActionCode(auth, actionCode);
+
+        // After successful verification, we should update Firestore metadata if user is logged in
+        // or just show success and let them login.
+        // Firebase Auth automatically signs the user out after applyActionCode usually,
+        // but we want to make sure the DB is updated.
+        // However, we don't have the UID here unless they were just signed up.
+        // For reliability, we'll mark as verified upon their NEXT login in App.tsx 
+        // OR if they are currently cached.
+
+        setSuccessMsg("Email verified successfully! You can now access your dashboard.");
+        setTimeout(() => setMode('login'), 4000);
         setLoading(false);
       }
     } catch (err: any) {
-      console.error("Auth Error Code:", err.code);
+      console.error("Auth Error Code:", err.code, err.message);
       setLoading(false);
 
-      // Specific error mapping as requested
-      if (mode === 'signup' && (err.code === 'auth/email-already-in-use')) {
-        setError("User already exists. Please sign in");
-      } else if (
-        mode === 'login' &&
-        (err.code === 'auth/invalid-credential' ||
-          err.code === 'auth/user-not-found' ||
-          err.code === 'auth/wrong-password' ||
-          err.code === 'auth/invalid-email')
-      ) {
-        setError("Email or password is incorrect");
+      // Specific error mapping for wrong credentials as requested
+      if (mode === 'login' && (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential')) {
+        setError("Invalid email or password. Please try again.");
+      } else if (mode === 'signup' && err.code === 'auth/email-already-in-use') {
+        setError("An account with this email already exists.");
+      } else if (err.code === 'auth/expired-action-code') {
+        setError("The link has expired. Please request a new one.");
+      } else if (err.code === 'auth/invalid-action-code') {
+        setError("The link is invalid. Please request a new one.");
       } else {
-        setError(err.message || "Authentication failed.");
+        setError(err.message || "An unexpected error occurred.");
       }
     }
   };
@@ -195,7 +227,10 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         <div className="p-10">
           <div className="text-center mb-10">
             <h2 className="text-4xl font-black text-slate-900 tracking-tight">
-              {mode === 'login' ? 'Authorize' : mode === 'signup' ? 'Join Vault' : 'Recovery'}
+              {mode === 'login' ? 'Authorize' :
+                mode === 'signup' ? 'Join Vault' :
+                  mode === 'forgot-password' ? 'Recovery' :
+                    mode === 'reset-password' ? 'New Password' : 'Verify Email'}
             </h2>
             <p className="text-slate-400 mt-2 font-black uppercase tracking-[0.2em] text-[10px]">Institutional Wealth OS</p>
           </div>
@@ -208,26 +243,62 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
           {successMsg && <div className="mb-6 p-4 text-xs rounded-2xl border bg-emerald-50 border-emerald-100 text-emerald-600 font-bold text-center">✓ {successMsg}</div>}
 
           <form onSubmit={handleSubmit} className="space-y-5">
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Email Identifier</label>
-              <input
-                type="email"
-                required
-                name="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
-                placeholder="investor@vault.com"
-              />
-            </div>
+            {(mode !== 'reset-password' && mode !== 'verify-email') && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Email Identifier</label>
+                <input
+                  type="email"
+                  required
+                  name="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
+                  placeholder="investor@vault.com"
+                  disabled={mode === 'forgot-password' && successMsg !== ''}
+                />
+              </div>
+            )}
+
+            {mode === 'reset-password' && (
+              <div className="space-y-5">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">New Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
+                    placeholder="••••••••"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Confirm New Password</label>
+                  <input
+                    type="password"
+                    required
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
+                    placeholder="••••••••"
+                  />
+                </div>
+              </div>
+            )}
+
+            {mode === 'verify-email' && (
+              <div className="py-4 text-center">
+                <p className="text-slate-500 font-medium mb-2">Click below to finalize your email verification.</p>
+              </div>
+            )}
 
             {mode !== 'forgot-password' && (
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center ml-1">
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Password</label>
                   {mode === 'login' && (
-                    <button type="button" onClick={() => setMode('forgot-password')} className="text-[10px] font-black text-emerald-600 hover:underline">RECOVER</button>
+                    <button type="button" onClick={() => setMode('forgot-password')} className="text-[10px] font-black text-emerald-600 hover:underline">Forgot Password?</button>
                   )}
                 </div>
                 <div className="relative">
@@ -269,14 +340,19 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
             )}
 
             <button
-              disabled={loading}
+              type="submit"
+              disabled={loading || (mode === 'forgot-password' && successMsg !== '')}
               className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-2xl transition-all active:scale-95 disabled:opacity-50 mt-4"
             >
-              {loading ? 'Processing...' : mode === 'login' ? 'Authorize Dashboard' : mode === 'signup' ? 'Create Vault' : 'Send Link'}
+              {loading ? 'Processing...' :
+                mode === 'login' ? 'Authorize Dashboard' :
+                  mode === 'signup' ? 'Create Vault' :
+                    mode === 'forgot-password' ? 'Send Recovery Link' :
+                      mode === 'reset-password' ? 'Update Password' : 'Verify Account'}
             </button>
           </form>
 
-          {mode !== 'forgot-password' && (
+          {(mode === 'login' || mode === 'signup') && (
             <>
               <div className="relative my-6">
                 <div className="absolute inset-0 flex items-center">
@@ -318,7 +394,11 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
           <div className="mt-8 text-center">
             <button
-              onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(''); }}
+              onClick={() => {
+                setMode(mode === 'login' ? 'signup' : 'login');
+                setError('');
+                setSuccessMsg('');
+              }}
               className="text-[10px] font-black text-emerald-600 hover:underline uppercase tracking-widest"
             >
               {mode === 'login' ? 'Establish New Profile' : 'Return to Authorization'}

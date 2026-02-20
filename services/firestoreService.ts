@@ -1,21 +1,22 @@
 
-import { 
-  collection, 
-  doc, 
-  addDoc, 
-  getDocs, 
+import {
+  collection,
+  doc,
+  addDoc,
+  getDocs,
   getDoc,
   setDoc,
   updateDoc,
-  deleteDoc, 
-  query, 
-  orderBy, 
+  deleteDoc,
+  query,
+  orderBy,
   serverTimestamp,
   arrayUnion,
   arrayRemove,
   writeBatch
 } from "firebase/firestore";
-import { db } from "./firebase";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { db, app } from "./firebase";
 import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset } from "../types";
 
 // --- EXISTING MOCKS (Kept for compatibility with existing components if needed) ---
@@ -40,6 +41,7 @@ export const initializeUser = async (uid: string, email?: string | null, display
     displayName: displayName || 'Investor',
     status: 'active',
     role: role,
+    isVerified: false,
     lastLogin: new Date().toISOString(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -47,6 +49,13 @@ export const initializeUser = async (uid: string, email?: string | null, display
 
   await setDoc(docRef, newUser);
   return newUser;
+};
+
+export const markUserAsVerified = async (uid: string) => {
+  await updateDoc(doc(db, "users", uid), {
+    isVerified: true,
+    updatedAt: new Date().toISOString()
+  });
 };
 
 export const getUserMetadata = async (uid: string): Promise<UserMetadata | null> => {
@@ -72,6 +81,20 @@ export const updateUserRole = async (uid: string, role: 'user' | 'admin') => {
 
 export const deleteUserRecord = async (uid: string) => {
   await deleteDoc(doc(db, "users", uid));
+};
+
+export const deleteUserFully = async (uid: string) => {
+  const functions = getFunctions(app);
+  const deleteUserAccount = httpsCallable(functions, 'deleteUserAccount');
+  try {
+    const result = await deleteUserAccount({ uid });
+    return result.data;
+  } catch (error) {
+    console.error("Full Deletion Failed:", error);
+    // Fallback to record deletion if function fails or isn't deployed
+    await deleteUserRecord(uid);
+    throw error;
+  }
 };
 
 export const purgeUsers = async (uids: string[]) => {
@@ -106,7 +129,7 @@ export const clearPortfolio = async (uid: string) => {
 export const getWatchlist = async (uid: string): Promise<string[]> => {
   const docRef = doc(db, "users", uid);
   const docSnap = await getDoc(docRef);
-  
+
   if (docSnap.exists()) {
     const data = docSnap.data();
     return data.watchlist || [];
@@ -208,13 +231,13 @@ export const deleteTeamMember = async (uid: string, memberId: string) => {
 // Batch upload market assets (e.g. S&P 500 list)
 export const batchUploadMarketData = async (market: string, assets: { symbol: string; name: string }[]) => {
   // Firestore batch limit is 500 operations. We must chunk the data.
-  const CHUNK_SIZE = 450; 
+  const CHUNK_SIZE = 450;
   const collectionName = `market_${market.toLowerCase()}`;
-  
+
   for (let i = 0; i < assets.length; i += CHUNK_SIZE) {
     const chunk = assets.slice(i, i + CHUNK_SIZE);
     const batch = writeBatch(db);
-    
+
     chunk.forEach(asset => {
       // Use symbol as Doc ID to prevent duplicates
       const docRef = doc(db, collectionName, asset.symbol);

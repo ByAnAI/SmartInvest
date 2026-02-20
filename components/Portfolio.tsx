@@ -5,6 +5,8 @@ import { PortfolioItem } from '../types';
 import { auth } from '../services/firebase';
 import { SP500_TICKERS } from './SP500Data';
 import { NASDAQ_TICKERS } from './NasdaqData';
+import { CRYPTO_TICKERS } from './CryptoData';
+import { FOREX_TICKERS } from './ForexData';
 
 const TICKER_DIRECTORY = [
   // EQUITIES
@@ -56,10 +58,37 @@ const Portfolio: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [itemToDelete, setItemToDelete] = useState<string | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState<'EQUITIES' | 'COMMODITIES' | 'NASDAQ' | 'S&P' | 'ALL'>('EQUITIES');
+  const [selectedCategory, setSelectedCategory] = useState<'EQUITIES' | 'COMMODITIES' | 'NASDAQ' | 'S&P' | 'CRYPTO' | 'FOREX' | 'ALL'>('EQUITIES');
+  const [liveFxRates, setLiveFxRates] = useState<Record<string, number>>({});
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const user = auth.currentUser;
+
+  // Fetch live forex rates on mount
+  useEffect(() => {
+    const fetchForexRates = async () => {
+      try {
+        const res = await fetch('https://open.er-api.com/v6/latest/USD');
+        const data = await res.json();
+        if (data?.rates) {
+          const computed: Record<string, number> = {};
+          FOREX_TICKERS.forEach(pair => {
+            const { base, quote, symbol } = pair;
+            const baseInUsd = base === 'USD' ? 1 : 1 / (data.rates[base] || 1);
+            const quotePerUsd = data.rates[quote] || 1;
+            computed[symbol] = Number((baseInUsd * quotePerUsd).toFixed(5));
+          });
+          setLiveFxRates(computed);
+        }
+      } catch (e) {
+        console.warn('Forex rate fetch failed', e);
+      }
+    };
+    fetchForexRates();
+    // Refresh every 60 seconds
+    const interval = setInterval(fetchForexRates, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Simulation: Market Feed for live valuation
   useEffect(() => {
@@ -127,7 +156,12 @@ const Portfolio: React.FC = () => {
     const heldSymbols = new Set(items.map(i => i.symbol.toUpperCase()));
 
     // Combine base directory with S&P and NASDAQ tickers
-    const MASTER_DIRECTORY = [...TICKER_DIRECTORY, ...SP500_TICKERS, ...NASDAQ_TICKERS];
+    // Merge live forex rates into FOREX_TICKERS
+    const forexWithLiveRates = FOREX_TICKERS.map(f => ({
+      ...f,
+      price: liveFxRates[f.symbol] ?? f.price,
+    }));
+    const MASTER_DIRECTORY = [...TICKER_DIRECTORY, ...SP500_TICKERS, ...NASDAQ_TICKERS, ...CRYPTO_TICKERS, ...forexWithLiveRates];
 
     const baseList = selectedCategory === 'ALL'
       ? MASTER_DIRECTORY
@@ -135,7 +169,7 @@ const Portfolio: React.FC = () => {
 
     if (!searchQuery) {
       // Show more for S&P/NASDAQ to allow scrolling as requested
-      const limit = (selectedCategory === 'S&P' || selectedCategory === 'NASDAQ') ? 50 : 10;
+      const limit = (selectedCategory === 'S&P' || selectedCategory === 'NASDAQ' || selectedCategory === 'CRYPTO' || selectedCategory === 'FOREX') ? 50 : 10;
       return baseList.filter(s => !heldSymbols.has(s.symbol.toUpperCase())).slice(0, limit);
     }
 
@@ -144,7 +178,7 @@ const Portfolio: React.FC = () => {
         stock.name.toLowerCase().includes(searchQuery.toLowerCase())) &&
       !heldSymbols.has(stock.symbol.toUpperCase())
     ).slice(0, 50);
-  }, [searchQuery, items, selectedCategory]);
+  }, [searchQuery, items, selectedCategory, liveFxRates]);
 
   const handleAddTicker = async (stock: typeof TICKER_DIRECTORY[0]) => {
     if (!user) return;
@@ -245,7 +279,7 @@ const Portfolio: React.FC = () => {
             Market Explorer
           </h3>
           <div className="flex items-center bg-slate-100 p-1 rounded-xl overflow-x-auto no-scrollbar">
-            {(['EQUITIES', 'COMMODITIES', 'NASDAQ', 'S&P', 'ALL'] as const).map((cat) => (
+            {(['EQUITIES', 'COMMODITIES', 'NASDAQ', 'S&P', 'CRYPTO', 'FOREX', 'ALL'] as const).map((cat) => (
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
@@ -286,8 +320,8 @@ const Portfolio: React.FC = () => {
                           {stock.symbol[0]}
                         </div>
                         <div>
-                          <p className="font-black text-slate-900 text-sm">{stock.symbol}</p>
-                          <p className="text-[10px] text-slate-400 font-bold uppercase">{stock.name}</p>
+                          <p className="font-black text-slate-900 text-sm">{stock.name}</p>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{stock.category} · {stock.symbol}</p>
                         </div>
                       </div>
                       <div className="flex items-center space-x-6">

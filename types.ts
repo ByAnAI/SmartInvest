@@ -22,6 +22,7 @@ export interface UserMetadata {
   displayName: string;
   status: 'active' | 'disabled';
   role: 'user' | 'admin';
+  isVerified: boolean;
   lastLogin: string;
   createdAt: string;
   updatedAt: string;

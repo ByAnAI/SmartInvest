@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { getAllUsers, updateUserStatus, updateUserRole, deleteUserRecord, purgeUsers, batchUploadMarketData } from '../services/firestoreService';
+import { getAllUsers, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData } from '../services/firestoreService';
 import { UserMetadata } from '../types';
 import { auth } from '../services/firebase';
 import * as XLSX from 'xlsx';
@@ -82,9 +82,9 @@ const AdminDashboard: React.FC = () => {
           const name = row['Name'] || row['Company'] || row['name'] || row['company'];
 
           if (symbol && name) {
-            assetsToUpload.push({ 
-              symbol: String(symbol).toUpperCase().trim(), 
-              name: String(name).trim() 
+            assetsToUpload.push({
+              symbol: String(symbol).toUpperCase().trim(),
+              name: String(name).trim()
             });
           }
         });
@@ -99,7 +99,7 @@ const AdminDashboard: React.FC = () => {
         setFile(null);
         // Reset file input value
         const fileInput = document.getElementById('excel-upload') as HTMLInputElement;
-        if(fileInput) fileInput.value = "";
+        if (fileInput) fileInput.value = "";
 
       } catch (err: any) {
         console.error("Upload failed", err);
@@ -141,11 +141,11 @@ const AdminDashboard: React.FC = () => {
   const handleDeleteUser = async (uid: string) => {
     if (uid === currentUser?.uid) return alert("System Integrity Check: Self-purging is prohibited.");
     if (!window.confirm("CRITICAL WARNING: Permanently delete this investor record? This action is recorded in the system audit logs.")) return;
-    
+
     try {
-      await deleteUserRecord(uid);
+      await deleteUserFully(uid);
       setUsers(users.filter(u => u.uid !== uid));
-      showFeedback("Identity purged from the registry.");
+      showFeedback("Identity purged from Auth and Registry.");
     } catch (err: any) {
       setError("Purge operation failed: " + err.message);
     }
@@ -155,7 +155,7 @@ const AdminDashboard: React.FC = () => {
     const uidsToPurge = users.filter(u => u.uid !== currentUser?.uid).map(u => u.uid);
     if (uidsToPurge.length === 0) return alert("Registry is already clean (excluding your master account).");
 
-    const firstConfirm = window.confirm(`NUCLEAR OPTION: You are about to purge ${uidsToPurge.length} identity records from the database. This action is irreversible. Continue?`);
+    const firstConfirm = window.confirm(`NUCLEAR OPTION: You are about to purge ${uidsToPurge.length} identity records from Auth and Database. This action is irreversible. Continue?`);
     if (!firstConfirm) return;
 
     const secondConfirm = window.prompt("To proceed with the total registry wipe, please type: PURGE ALL DATA");
@@ -163,7 +163,9 @@ const AdminDashboard: React.FC = () => {
 
     setIsPurging(true);
     try {
-      await purgeUsers(uidsToPurge);
+      for (const uid of uidsToPurge) {
+        await deleteUserFully(uid);
+      }
       setUsers(users.filter(u => u.uid === currentUser?.uid));
       showFeedback("Institutional registry has been purged.");
     } catch (err: any) {
@@ -191,7 +193,7 @@ const AdminDashboard: React.FC = () => {
           <p className="text-slate-400 mt-2 max-w-lg font-medium">Root-level directory for institutional identity management and network oversight.</p>
         </div>
         <div className="relative z-10 mt-6 md:mt-0">
-          <button 
+          <button
             onClick={() => fetchUsers(true)}
             disabled={isSyncing}
             className="group flex items-center space-x-3 px-6 py-3 bg-white/10 hover:bg-white/20 border border-white/10 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all"
@@ -204,8 +206,8 @@ const AdminDashboard: React.FC = () => {
 
       {error && (
         <div className="bg-rose-50 border border-rose-100 p-6 rounded-3xl animate-in fade-in slide-in-from-top-4 duration-500 shadow-xl shadow-rose-900/5">
-           <h4 className="font-bold text-rose-900 text-lg">Operation Failed</h4>
-           <p className="text-rose-600 text-sm font-medium mt-1">{error}</p>
+          <h4 className="font-bold text-rose-900 text-lg">Operation Failed</h4>
+          <p className="text-rose-600 text-sm font-medium mt-1">{error}</p>
         </div>
       )}
 
@@ -218,47 +220,47 @@ const AdminDashboard: React.FC = () => {
       {/* --- MARKET DATA UPLOAD SECTION --- */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
         <div className="flex justify-between items-center mb-6">
-           <div>
-             <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Market Data Ingestion</h3>
-             <p className="text-xs text-slate-400 font-bold mt-1">Upload Excel sheets (.xlsx) to populate market databases.</p>
-           </div>
-           <div className="text-3xl opacity-20">📊</div>
+          <div>
+            <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Market Data Ingestion</h3>
+            <p className="text-xs text-slate-400 font-bold mt-1">Upload Excel sheets (.xlsx) to populate market databases.</p>
+          </div>
+          <div className="text-3xl opacity-20">📊</div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end bg-slate-50 p-6 rounded-2xl border border-slate-200/60">
-           <div className="space-y-2">
-             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Target Database</label>
-             <select 
-               value={selectedMarket}
-               onChange={(e) => setSelectedMarket(e.target.value)}
-               className="w-full px-5 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 appearance-none"
-             >
-               <option value="SP500">S&P 500</option>
-               <option value="NASDAQ">Nasdaq</option>
-               <option value="ASIA">Asian Markets</option>
-               <option value="CRYPTO">Cryptocurrency</option>
-               <option value="COMMODITY">Commodities</option>
-             </select>
-           </div>
-           
-           <div className="space-y-2">
-             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Source File (.xlsx)</label>
-             <input 
-               id="excel-upload"
-               type="file" 
-               accept=".xlsx, .xls"
-               onChange={handleFileChange}
-               className="w-full text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-black file:uppercase file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 text-slate-500 font-medium cursor-pointer"
-             />
-           </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Target Database</label>
+            <select
+              value={selectedMarket}
+              onChange={(e) => setSelectedMarket(e.target.value)}
+              className="w-full px-5 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 appearance-none"
+            >
+              <option value="SP500">S&P 500</option>
+              <option value="NASDAQ">Nasdaq</option>
+              <option value="ASIA">Asian Markets</option>
+              <option value="CRYPTO">Cryptocurrency</option>
+              <option value="COMMODITY">Commodities</option>
+            </select>
+          </div>
 
-           <button 
-             onClick={processExcel}
-             disabled={uploadingMarket || !file}
-             className="w-full py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-           >
-             {uploadingMarket ? 'Ingesting Data...' : 'Process & Upload'}
-           </button>
+          <div className="space-y-2">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Source File (.xlsx)</label>
+            <input
+              id="excel-upload"
+              type="file"
+              accept=".xlsx, .xls"
+              onChange={handleFileChange}
+              className="w-full text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-black file:uppercase file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 text-slate-500 font-medium cursor-pointer"
+            />
+          </div>
+
+          <button
+            onClick={processExcel}
+            disabled={uploadingMarket || !file}
+            className="w-full py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            {uploadingMarket ? 'Ingesting Data...' : 'Process & Upload'}
+          </button>
         </div>
         <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
       </div>
@@ -284,9 +286,8 @@ const AdminDashboard: React.FC = () => {
                     <tr key={user.uid} className={`hover:bg-slate-50/50 transition-colors ${user.uid === currentUser?.uid ? 'bg-indigo-50/30' : ''}`}>
                       <td className="px-8 py-5">
                         <div className="flex items-center space-x-4">
-                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-sm border-2 ${
-                            user.role === 'admin' ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'
-                          }`}>
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-sm border-2 ${user.role === 'admin' ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'
+                            }`}>
                             {(user.displayName?.[0] || user.email?.[0] || 'U').toUpperCase()}
                           </div>
                           <div>
@@ -301,34 +302,32 @@ const AdminDashboard: React.FC = () => {
                         </div>
                       </td>
                       <td className="px-8 py-5">
-                        <button 
+                        <button
                           onClick={() => handleRoleChange(user.uid, user.role)}
                           disabled={user.uid === currentUser?.uid}
-                          className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
-                            user.role === 'admin' 
-                              ? 'bg-indigo-50 text-indigo-600 border border-indigo-100' 
-                              : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-100'
-                          }`}
+                          className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${user.role === 'admin'
+                            ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
+                            : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-100'
+                            }`}
                         >
                           {user.role}
                         </button>
                       </td>
                       <td className="px-8 py-5">
-                        <button 
+                        <button
                           onClick={() => handleToggleStatus(user.uid, user.status)}
                           disabled={user.uid === currentUser?.uid}
-                          className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center ${
-                            user.status === 'active' 
-                              ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' 
-                              : 'bg-rose-50 text-rose-600 border border-rose-100'
-                          }`}
+                          className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center ${user.status === 'active'
+                            ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                            : 'bg-rose-50 text-rose-600 border border-rose-100'
+                            }`}
                         >
                           <span className={`w-1.5 h-1.5 rounded-full mr-2 ${user.status === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
                           {user.status}
                         </button>
                       </td>
                       <td className="px-8 py-5 text-right">
-                        <button 
+                        <button
                           onClick={() => handleDeleteUser(user.uid)}
                           disabled={user.uid === currentUser?.uid}
                           className="p-3 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all disabled:opacity-0"
@@ -355,14 +354,13 @@ const AdminDashboard: React.FC = () => {
                     This directive will permanently purge all cloud asset data and identity metadata for every user in the database, excluding your own master account. This action cannot be undone.
                   </p>
                 </div>
-                <button 
+                <button
                   onClick={handleWipeRegistry}
                   disabled={isPurging || users.length <= 1}
-                  className={`px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 shadow-xl ${
-                    isPurging || users.length <= 1
-                      ? 'bg-rose-200 text-rose-400 cursor-not-allowed'
-                      : 'bg-rose-600 text-white hover:bg-rose-700 shadow-rose-900/10'
-                  }`}
+                  className={`px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 shadow-xl ${isPurging || users.length <= 1
+                    ? 'bg-rose-200 text-rose-400 cursor-not-allowed'
+                    : 'bg-rose-600 text-white hover:bg-rose-700 shadow-rose-900/10'
+                    }`}
                 >
                   {isPurging ? 'Purging Registry...' : 'Wipe All Identities'}
                 </button>

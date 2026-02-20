@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { auth } from './services/firebase';
 import { initializeUser } from './services/firestoreService';
 import Layout from './components/Layout';
@@ -22,7 +22,28 @@ const App: React.FC = () => {
   const [userMetadata, setUserMetadata] = useState<UserMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAuth, setShowAuth] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'reset-password' | 'verify-email'>('login');
+  const [authActionCode, setAuthActionCode] = useState<string | null>(null);
+
+  /**
+   * Detect Firebase Auth Actions (Action Codes) from URL
+   */
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const mode = urlParams.get('mode');
+    const oobCode = urlParams.get('oobCode');
+
+    if (mode && oobCode) {
+      setAuthActionCode(oobCode);
+      if (mode === 'resetPassword') {
+        setAuthMode('reset-password');
+        setShowAuth(true);
+      } else if (mode === 'verifyEmail') {
+        setAuthMode('verify-email');
+        setShowAuth(true);
+      }
+    }
+  }, []);
 
   /**
    * Auth State Observer
@@ -41,7 +62,14 @@ const App: React.FC = () => {
             currentUser.email,
             currentUser.displayName
           );
-          setUserMetadata(metadata);
+
+          if (metadata.status === 'disabled') {
+            await signOut(auth);
+            setUser(null);
+            setUserMetadata(null);
+          } else {
+            setUserMetadata(metadata);
+          }
         } else {
           // Block access for unverified users. 
           // Note: Auth.tsx handles the explicit signOut calls during the login/signup interaction
@@ -110,8 +138,16 @@ const App: React.FC = () => {
         <LandingPage onAuth={handleAuthOpen} />
         {showAuth && (
           <Auth
-            onClose={() => setShowAuth(false)}
+            onClose={() => {
+              setShowAuth(false);
+              // Clean up URL after action
+              if (authActionCode) {
+                window.history.replaceState({}, document.title, window.location.pathname);
+                setAuthActionCode(null);
+              }
+            }}
             initialMode={authMode}
+            actionCode={authActionCode || undefined}
           />
         )}
       </>

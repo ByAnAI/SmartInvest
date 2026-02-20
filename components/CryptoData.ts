@@ -1,0 +1,22 @@
+// Top 20 Cryptocurrencies by Market Cap
+export const CRYPTO_TICKERS = [
+    { symbol: "BTC", name: "Bitcoin", price: 67164.0, category: "CRYPTO" },
+    { symbol: "ETH", name: "Ethereum", price: 1942.27, category: "CRYPTO" },
+    { symbol: "USDT", name: "Tether", price: 0.9996, category: "CRYPTO" },
+    { symbol: "XRP", name: "XRP", price: 1.4, category: "CRYPTO" },
+    { symbol: "BNB", name: "BNB", price: 607.49, category: "CRYPTO" },
+    { symbol: "USDC", name: "USDC", price: 1.0, category: "CRYPTO" },
+    { symbol: "SOL", name: "Solana", price: 83.43, category: "CRYPTO" },
+    { symbol: "TRX", name: "TRON", price: 0.2848, category: "CRYPTO" },
+    { symbol: "DOGE", name: "Dogecoin", price: 0.098, category: "CRYPTO" },
+    { symbol: "BCH", name: "Bitcoin Cash", price: 550.53, category: "CRYPTO" },
+    { symbol: "WBT", name: "WhiteBIT Coin", price: 50.4, category: "CRYPTO" },
+    { symbol: "ADA", name: "Cardano", price: 0.2759, category: "CRYPTO" },
+    { symbol: "USDS", name: "USDS", price: 0.9999, category: "CRYPTO" },
+    { symbol: "LEO", name: "LEO Token", price: 8.71, category: "CRYPTO" },
+    { symbol: "HYPE", name: "Hyperliquid", price: 29.29, category: "CRYPTO" },
+    { symbol: "USDE", name: "Ethena USDe", price: 0.9987, category: "CRYPTO" },
+    { symbol: "XMR", name: "Monero", price: 330.16, category: "CRYPTO" },
+    { symbol: "LINK", name: "Chainlink", price: 8.6, category: "CRYPTO" },
+    { symbol: "CC", name: "Canton", price: 0.158, category: "CRYPTO" },
+];
