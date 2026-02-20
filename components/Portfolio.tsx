@@ -4,6 +4,7 @@ import { getPortfolio, addStock, removeStock, clearPortfolio } from '../services
 import { PortfolioItem } from '../types';
 import { auth } from '../services/firebase';
 import { SP500_TICKERS } from './SP500Data';
+import { NASDAQ_TICKERS } from './NasdaqData';
 
 const TICKER_DIRECTORY = [
   // EQUITIES
@@ -125,16 +126,16 @@ const Portfolio: React.FC = () => {
   const filteredResults = useMemo(() => {
     const heldSymbols = new Set(items.map(i => i.symbol.toUpperCase()));
 
-    // Combine base directory with S&P tickers
-    const MASTER_DIRECTORY = [...TICKER_DIRECTORY, ...SP500_TICKERS];
+    // Combine base directory with S&P and NASDAQ tickers
+    const MASTER_DIRECTORY = [...TICKER_DIRECTORY, ...SP500_TICKERS, ...NASDAQ_TICKERS];
 
     const baseList = selectedCategory === 'ALL'
       ? MASTER_DIRECTORY
       : MASTER_DIRECTORY.filter(s => s.category === (selectedCategory as any));
 
     if (!searchQuery) {
-      // Show more for S&P to allow scrolling as requested
-      const limit = selectedCategory === 'S&P' ? 50 : 10;
+      // Show more for S&P/NASDAQ to allow scrolling as requested
+      const limit = (selectedCategory === 'S&P' || selectedCategory === 'NASDAQ') ? 50 : 10;
       return baseList.filter(s => !heldSymbols.has(s.symbol.toUpperCase())).slice(0, limit);
     }
 
