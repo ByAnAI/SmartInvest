@@ -105,6 +105,8 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
         // Check Email Verification
         if (!userCredential.user.emailVerified) {
+          // Explicitly resend verification if they try to login while unverified
+          await sendEmailVerification(userCredential.user);
           await signOut(auth);
           setVerificationSent(true);
           setLoading(false);
@@ -118,17 +120,8 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         // Signup
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
 
-        // Construct ActionCodeSettings to ensure the verification link brings the user back to the app
-        const actionCodeSettings = {
-          // URL you want to redirect back to. The domain (www.example.com) for this
-          // URL must be whitelisted in the Firebase Console.
-          url: window.location.origin,
-          // This must be true.
-          handleCodeInApp: true,
-        };
-
-        // Send Verification Email with ActionCodeSettings
-        await sendEmailVerification(userCredential.user, actionCodeSettings);
+        // Send Verification Email - Simplified for reliability
+        await sendEmailVerification(userCredential.user);
 
         // Sign out immediately to prevent auto-login
         await signOut(auth);
@@ -137,11 +130,8 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
-        const actionCodeSettings = {
-          url: window.location.origin,
-          handleCodeInApp: true,
-        };
-        await sendPasswordResetEmail(auth, email, actionCodeSettings);
+        // Send Password Reset Email - Simplified for reliability
+        await sendPasswordResetEmail(auth, email);
         setSuccessMsg("Recovery link dispatched. Check your inbox.");
         setTimeout(() => setMode('login'), 3000);
         setLoading(false);
