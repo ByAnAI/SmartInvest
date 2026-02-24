@@ -19,6 +19,7 @@ const AdminDashboard: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
 
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [creatingWatchlist, setCreatingWatchlist] = useState(false);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -157,6 +158,21 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  /** Create watchlist of today — visible to all users when logged in. Placeholder: button only for now. */
+  const handleCreateWatchlistOfToday = async () => {
+    setCreatingWatchlist(true);
+    setError(null);
+    try {
+      // TODO: create global watchlist (e.g. store in Supabase table), then all users see it
+      await new Promise(r => setTimeout(r, 600));
+      showFeedback("Create watchlist of today — action ready. Backend wiring next.");
+    } catch (err: any) {
+      setError(err.message || "Watchlist creation failed.");
+    } finally {
+      setCreatingWatchlist(false);
+    }
+  };
+
   const handleWipeRegistry = async () => {
     const uidsToPurge = users.filter(u => u.uid !== currentUser?.uid).map(u => u.uid);
     if (uidsToPurge.length === 0) return alert("Registry is already clean (excluding your master account).");
@@ -269,6 +285,23 @@ const AdminDashboard: React.FC = () => {
           </button>
         </div>
         <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
+      </div>
+
+      {/* Create watchlist of today — visible to all users */}
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
+        <div className="flex justify-between items-center flex-wrap gap-4">
+          <div>
+            <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Today&apos;s watchlist</h3>
+            <p className="text-xs text-slate-400 font-bold mt-1">Create a watchlist for today. All logged-in users can see it.</p>
+          </div>
+          <button
+            onClick={handleCreateWatchlistOfToday}
+            disabled={creatingWatchlist}
+            className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            {creatingWatchlist ? 'Creating...' : "Create watchlist of today"}
+          </button>
+        </div>
       </div>
 
       {!error && (
