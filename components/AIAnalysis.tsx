@@ -3,11 +3,14 @@ import React, { useState } from 'react';
 import { getStockInsight } from '../services/geminiService';
 import { InsightResponse } from '../types';
 
+type WatchlistMarket = 'SP500' | 'NASDAQ' | 'CRYPTO' | 'FOREX';
+
 const AIAnalysis: React.FC = () => {
   const [symbol, setSymbol] = useState('');
   const [loading, setLoading] = useState(false);
   const [insight, setInsight] = useState<InsightResponse | null>(null);
   const [error, setError] = useState('');
+  const [watchlistMarket, setWatchlistMarket] = useState<WatchlistMarket>('SP500');
 
   const handleAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,6 +55,43 @@ const AIAnalysis: React.FC = () => {
               {loading ? 'Analyzing...' : 'Generate Insight'}
             </button>
           </form>
+        </div>
+      </div>
+
+      {/* Create watchlist of the day — interface only, no backend */}
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8">
+        <h3 className="text-slate-900 font-bold uppercase tracking-widest text-sm mb-2">Watchlist of the day</h3>
+        <p className="text-slate-500 text-xs font-medium mb-6">Choose a market and create today’s watchlist. All users can see it once created.</p>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-6 flex-wrap">
+          <div className="flex flex-wrap gap-3">
+            {(
+              [
+                { id: 'SP500' as const, label: 'S&P 500' },
+                { id: 'NASDAQ' as const, label: 'NASDAQ' },
+                { id: 'CRYPTO' as const, label: 'Crypto' },
+                { id: 'FOREX' as const, label: 'Forex' },
+              ] as const
+            ).map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setWatchlistMarket(id)}
+                className={`px-4 py-2.5 rounded-xl text-sm font-bold uppercase tracking-wider transition-all ${
+                  watchlistMarket === id
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition-all active:scale-95"
+          >
+            Create watchlist
+          </button>
         </div>
       </div>
 
