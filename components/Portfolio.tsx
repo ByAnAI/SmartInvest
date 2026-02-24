@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { getPortfolio, addStock, removeStock, clearPortfolio } from '../services/supabaseService';
+import { getPortfolio, addStock, removeStock, updateStock, clearPortfolio } from '../services/supabaseService';
 import { PortfolioItem } from '../types';
 import { supabase } from '../services/supabase';
 import { SP500_TICKERS } from './SP500Data';
@@ -66,18 +66,36 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
   const [liveFxRates, setLiveFxRates] = useState<Record<string, number>>({});
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Use the passed userId or fallback to current session
+  // Manual Entry State
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualSymbol, setManualSymbol] = useState('');
+  const [manualShares, setManualShares] = useState('1');
+  const [manualPrice, setManualPrice] = useState('');
+
+  // Add-from-list modal: ticker chosen from list, volume default 1 (user can adjust), price is live
+  type ListStock = { symbol: string; name: string; price: number; category: string };
+  const [showAddFromListModal, setShowAddFromListModal] = useState(false);
+  const [addFromListStock, setAddFromListStock] = useState<ListStock | null>(null);
+  const [addFromListVolume, setAddFromListVolume] = useState('1');
+
+  // Editable volume in table
+  const [editingVolumeSymbol, setEditingVolumeSymbol] = useState<string | null>(null);
+  const [editingVolumeValue, setEditingVolumeValue] = useState('');
+
+  // Use the passed userId (from App when logged in) or fallback to current session
   const [currentUid, setCurrentUid] = useState<string | undefined>(userId);
 
   useEffect(() => {
-    if (!currentUid) {
+    if (userId) {
+      setCurrentUid(userId);
+    } else if (!currentUid) {
       supabase.auth.getSession().then(({ data: { session } }) => {
         if (session?.user) {
           setCurrentUid(session.user.id);
         }
       });
     }
-  }, [userId, currentUid]);
+  }, [userId]);
 
   // Fetch live forex rates on mount
   useEffect(() => {
@@ -105,15 +123,48 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     return () => clearInterval(interval);
   }, []);
 
-  // Simulation: Market Feed for live valuation
+  const finnhubKey = (import.meta.env.VITE_FINNHUB_KEY as string | undefined)?.trim() || undefined;
+
+  // Live market prices: Finnhub when key is set, otherwise simulated tick
   useEffect(() => {
+    const symbols = [...new Set([...items.map(i => i.symbol), addFromListStock?.symbol].filter(Boolean) as string[])];
+    if (symbols.length === 0) return;
+
+    if (finnhubKey) {
+      const fetchLive = async () => {
+        const updates: Record<string, number> = {};
+        await Promise.all(
+          symbols.map(async (symbol) => {
+            try {
+              const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${finnhubKey}`);
+              const data = await res.json();
+              if (data?.c != null && typeof data.c === 'number') {
+                updates[symbol] = Number(data.c.toFixed(2));
+              }
+            } catch {
+              // keep previous
+            }
+          })
+        );
+        setMarketPrices(prev => {
+          setLastPrices(prev);
+          return { ...prev, ...updates };
+        });
+        setLastSync(new Date().toLocaleTimeString());
+      };
+      fetchLive();
+      const interval = setInterval(fetchLive, 25000);
+      return () => clearInterval(interval);
+    }
+
+    // No API key: simulated live tick (price changes with market feel)
     const interval = setInterval(() => {
       setMarketPrices(prev => {
         const next = { ...prev };
         const nextLast = { ...prev };
         items.forEach(item => {
           const currentPrice = next[item.symbol] || item.avgCost;
-          const fluctuation = currentPrice * (Math.random() * 0.001 * 2 - 0.001); // 0.1% fluctuation
+          const fluctuation = currentPrice * (Math.random() * 0.002 - 0.001);
           nextLast[item.symbol] = currentPrice;
           next[item.symbol] = Number((currentPrice + fluctuation).toFixed(2));
         });
@@ -121,10 +172,9 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
         return next;
       });
       setLastSync(new Date().toLocaleTimeString());
-    }, 3000); // 3 seconds for active "live" feel
-
+    }, 3000);
     return () => clearInterval(interval);
-  }, [items, lastPrices]);
+  }, [items.length, addFromListStock?.symbol, finnhubKey]);
 
   // Ensure S&P assets have variety in prices
   useMemo(() => {
@@ -140,6 +190,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     try {
       const data = await getPortfolio(currentUid);
       setItems(data);
+      setError(null);
       // Initialize market prices with current directory data or avg cost
       const initialPrices: Record<string, number> = {};
       data.forEach(item => {
@@ -149,7 +200,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
       setMarketPrices(initialPrices);
       setLastSync(new Date().toLocaleTimeString());
     } catch (e: any) {
-      setError("Sync Interrupted: " + e.message);
+      setError("Sync interrupted: " + (e?.message || 'Could not load portfolio'));
     } finally {
       setLoading(false);
     }
@@ -195,20 +246,54 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     ).slice(0, 50);
   }, [searchQuery, items, selectedCategory, liveFxRates]);
 
-  const handleAddTicker = async (stock: typeof TICKER_DIRECTORY[0]) => {
-    if (!currentUid) return;
-    setIsAdding(stock.symbol);
+  const openAddFromListModal = (stock: ListStock) => {
+    setAddFromListStock(stock);
+    setAddFromListVolume('1');
+    setShowAddFromListModal(true);
+  };
+
+  const handleAddFromListSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUid || !addFromListStock) return;
+    const vol = parseFloat(addFromListVolume);
+    if (!Number.isFinite(vol) || vol <= 0) return;
+    const livePrice = marketPrices[addFromListStock.symbol] ?? addFromListStock.price;
+    setIsAdding(addFromListStock.symbol);
     try {
-      const newItem: PortfolioItem = { symbol: stock.symbol, shares: 1, avgCost: stock.price };
+      const newItem: PortfolioItem = { symbol: addFromListStock.symbol, shares: vol, avgCost: livePrice };
       await addStock(currentUid, newItem);
       await loadPortfolio();
       setSearchQuery('');
       setShowDropdown(false);
+      setShowAddFromListModal(false);
+      setAddFromListStock(null);
+      setAddFromListVolume('1');
     } catch (e: any) {
       setError(e.message);
     } finally {
       setIsAdding(null);
     }
+  };
+
+  const startEditVolume = (item: PortfolioItem) => {
+    setEditingVolumeSymbol(item.symbol);
+    setEditingVolumeValue(String(item.shares));
+  };
+
+  const saveVolume = async () => {
+    if (!currentUid || !editingVolumeSymbol) return;
+    const val = parseFloat(editingVolumeValue);
+    if (!Number.isFinite(val) || val <= 0) {
+      setEditingVolumeSymbol(null);
+      return;
+    }
+    try {
+      await updateStock(currentUid, editingVolumeSymbol, { shares: val });
+      await loadPortfolio();
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setEditingVolumeSymbol(null);
   };
 
   const handleInitiateRemove = (sym: string) => {
@@ -229,6 +314,30 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     }
   };
 
+  const handleManualAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUid || !manualSymbol || !manualShares || !manualPrice) return;
+
+    setIsAdding(manualSymbol.toUpperCase());
+    try {
+      const newItem: PortfolioItem = {
+        symbol: manualSymbol.toUpperCase(),
+        shares: parseFloat(manualShares),
+        avgCost: parseFloat(manualPrice)
+      };
+      await addStock(currentUid, newItem);
+      await loadPortfolio();
+      setShowManualModal(false);
+      setManualSymbol('');
+      setManualShares('1');
+      setManualPrice('');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setIsAdding(null);
+    }
+  };
+
   const totalValuation = items.reduce((acc, i) => acc + (i.shares * (marketPrices[i.symbol] || i.avgCost)), 0);
   const totalCost = items.reduce((acc, i) => acc + (i.shares * i.avgCost), 0);
 
@@ -241,6 +350,19 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto relative">
+      {/* Error banner when sync fails */}
+      {error && (
+        <div className="flex items-center justify-between gap-4 p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800">
+          <p className="text-sm font-bold flex-1">{error}</p>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="px-3 py-1.5 rounded-xl text-xs font-black uppercase bg-rose-200 hover:bg-rose-300 text-rose-900 transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* Delete Confirmation Modal */}
       {itemToDelete && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -263,6 +385,52 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
                 Liquidate
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add from list: ticker from list, volume default 1 (editable), price is live */}
+      {showAddFromListModal && addFromListStock && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl p-10 max-w-md w-full border border-slate-100 animate-in zoom-in-95 duration-200">
+            <h3 className="text-xl font-black text-slate-900 mb-1">Add to portfolio</h3>
+            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-6">{addFromListStock.name} · {addFromListStock.symbol}</p>
+            <form onSubmit={handleAddFromListSubmit} className="space-y-6">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Volume (shares)</label>
+                <input
+                  type="number"
+                  min="0.0001"
+                  step="any"
+                  required
+                  value={addFromListVolume}
+                  onChange={e => setAddFromListVolume(e.target.value)}
+                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Live price (market)</label>
+                <p className="px-5 py-4 bg-slate-100 border border-slate-200 rounded-2xl font-black text-slate-900 text-lg">
+                  ${(marketPrices[addFromListStock.symbol] ?? addFromListStock.price).toFixed(2)}
+                </p>
+              </div>
+              <div className="flex space-x-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowAddFromListModal(false); setAddFromListStock(null); }}
+                  className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAdding !== null}
+                  className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-indigo-600 hover:bg-indigo-700 shadow-lg active:scale-95 disabled:opacity-50"
+                >
+                  {isAdding ? 'Adding...' : 'Add to Vault'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -307,6 +475,12 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
               </button>
             ))}
           </div>
+          <button
+            onClick={() => setShowManualModal(true)}
+            className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 whitespace-nowrap"
+          >
+            + Manual Entry
+          </button>
         </div>
 
         <div className="relative">
@@ -327,7 +501,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
                   {filteredResults.map(stock => (
                     <div
                       key={stock.symbol}
-                      onClick={() => handleAddTicker(stock)}
+                      onClick={() => openAddFromListModal(stock)}
                       className="flex items-center justify-between p-5 hover:bg-slate-50 cursor-pointer transition-colors group"
                     >
                       <div className="flex items-center space-x-4">
@@ -340,8 +514,8 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
                         </div>
                       </div>
                       <div className="flex items-center space-x-6">
-                        <p className="text-sm font-black text-slate-900">${stock.price.toFixed(2)}</p>
-                        <button className="bg-indigo-600 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all">Add to Vault</button>
+                        <p className="text-sm font-black text-slate-900">${(marketPrices[stock.symbol] ?? stock.price).toFixed(2)}</p>
+                        <button type="button" className="bg-indigo-600 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-all">Add to Vault</button>
                       </div>
                     </div>
                   ))}
@@ -355,6 +529,74 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
           )}
         </div>
       </div>
+
+      {/* Manual Entry Modal */}
+      {showManualModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl p-10 max-w-md w-full border border-slate-100 animate-in zoom-in-95 duration-200">
+            <h3 className="text-2xl font-black text-slate-900 mb-2">Acquire Custom Asset</h3>
+            <p className="text-slate-400 text-xs font-black uppercase tracking-widest mb-8">Manual Ledger Override</p>
+
+            <form onSubmit={handleManualAdd} className="space-y-6">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Asset Symbol</label>
+                <input
+                  autoFocus
+                  required
+                  type="text"
+                  placeholder="e.g. TSLA, BTC, XAU"
+                  value={manualSymbol}
+                  onChange={e => setManualSymbol(e.target.value)}
+                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 transition-all uppercase"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Volume (Shares)</label>
+                  <input
+                    required
+                    type="number"
+                    step="any"
+                    value={manualShares}
+                    onChange={e => setManualShares(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Buy Price ($)</label>
+                  <input
+                    required
+                    type="number"
+                    step="any"
+                    placeholder="0.00"
+                    value={manualPrice}
+                    onChange={e => setManualPrice(e.target.value)}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="flex space-x-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowManualModal(false)}
+                  className="flex-1 px-4 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAdding !== null}
+                  className="flex-1 px-4 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-indigo-600 hover:bg-indigo-700 shadow-xl shadow-indigo-200 transition-all active:scale-95 disabled:opacity-50"
+                >
+                  {isAdding ? 'Syncing...' : 'Add to Vault'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
         <div className="px-8 py-6 border-b border-slate-50 bg-slate-50/50 flex justify-between items-center">
@@ -386,7 +628,11 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
               ) : (
                 items.map(item => {
                   const currentPrice = marketPrices[item.symbol] || item.avgCost;
+                  const prevPrice = lastPrices[item.symbol];
+                  const priceUp = prevPrice != null && currentPrice > prevPrice;
+                  const priceDown = prevPrice != null && currentPrice < prevPrice;
                   const isUp = currentPrice >= item.avgCost;
+                  const isEditing = editingVolumeSymbol === item.symbol;
                   return (
                     <tr key={item.symbol} className="hover:bg-slate-50/50 transition-all group">
                       <td className="px-8 py-5">
@@ -397,19 +643,36 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
                           <span className="font-black text-slate-900 tracking-tight text-sm">{item.symbol}</span>
                         </div>
                       </td>
-                      <td className="px-8 py-5 font-black text-slate-700 text-sm text-center">{item.shares}</td>
-                      <td className="px-8 py-5 font-bold text-slate-500 text-xs">${item.avgCost.toFixed(2)}</td>
-                      <td className="px-8 py-5 font-black text-slate-900 text-sm">
-                        <div className={`transition-all duration-300 rounded px-2 py-1 inline-block ${marketPrices[item.symbol] > lastPrices[item.symbol]
-                          ? 'bg-emerald-50 text-emerald-600'
-                          : marketPrices[item.symbol] < lastPrices[item.symbol]
-                            ? 'bg-rose-50 text-rose-600'
-                            : ''
-                          }`}>
-                          ${currentPrice.toFixed(2)}
-                        </div>
+                      <td className="px-8 py-5 text-center">
+                        {isEditing ? (
+                          <input
+                            type="number"
+                            min="0.0001"
+                            step="any"
+                            value={editingVolumeValue}
+                            onChange={e => setEditingVolumeValue(e.target.value)}
+                            onBlur={saveVolume}
+                            onKeyDown={e => { if (e.key === 'Enter') saveVolume(); }}
+                            className="w-20 px-2 py-1.5 text-sm font-black text-center rounded-lg border border-indigo-200 focus:ring-2 focus:ring-indigo-500 outline-none"
+                            autoFocus
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => startEditVolume(item)}
+                            className="font-black text-slate-700 text-sm hover:text-indigo-600 hover:underline"
+                          >
+                            {item.shares}
+                          </button>
+                        )}
                       </td>
-                      <td className="px-8 py-5 font-black text-slate-900 text-sm">
+                      <td className="px-8 py-5 font-bold text-slate-500 text-xs">${item.avgCost.toFixed(2)}</td>
+                      <td className="px-8 py-5 font-black text-sm">
+                        <span className={`transition-all duration-300 rounded px-2 py-1 inline-block ${priceUp ? 'text-emerald-600 bg-emerald-50' : priceDown ? 'text-rose-600 bg-rose-50' : 'text-slate-700'}`}>
+                          ${currentPrice.toFixed(2)}
+                        </span>
+                      </td>
+                      <td className="px-8 py-5 font-black text-sm">
                         <span className={isUp ? 'text-emerald-600' : 'text-rose-600'}>
                           ${(item.shares * currentPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>

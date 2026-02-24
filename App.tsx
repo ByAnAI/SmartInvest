@@ -16,7 +16,7 @@ import TeamMembers from './components/TeamMembers';
 import { UserMetadata } from './types';
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState('portfolio');
   const [user, setUser] = useState<any | null>(null);
   const [userMetadata, setUserMetadata] = useState<UserMetadata | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,6 +59,13 @@ const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Allow child components to change tabs via a custom event
+  useEffect(() => {
+    const handler = (e: CustomEvent) => setActiveTab(e.detail);
+    window.addEventListener('changeTab', handler as EventListener);
+    return () => window.removeEventListener('changeTab', handler as EventListener);
+  }, []);
+
   const handleAuthOpen = (mode: 'login' | 'signup') => {
     setAuthMode(mode);
     setShowAuth(true);
@@ -78,7 +85,7 @@ const App: React.FC = () => {
       case 'news':
         return <NewsSection />;
       case 'portfolio':
-        return <Portfolio />;
+        return <Portfolio userId={user?.id} />;
       case 'files':
         return <MyFiles />;
       case 'notes':
@@ -130,6 +137,8 @@ const App: React.FC = () => {
       activeTab={activeTab}
       setActiveTab={setActiveTab}
       isAdmin={isAdmin}
+      user={user}
+      userMetadata={userMetadata}
     >
       <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
         {renderContent()}

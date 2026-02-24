@@ -1,6 +1,5 @@
 
 import React, { useState } from 'react';
-import { auth } from '../services/firebase';
 
 const Dashboard: React.FC = () => {
   const today = new Date();
@@ -109,6 +108,8 @@ const Dashboard: React.FC = () => {
           <span>{dateStr}</span>
           <span className="text-slate-300">|</span>
           <a href="#" className="text-blue-600 hover:underline">View Online</a>
+          <span className="text-slate-300">|</span>
+          <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('changeTab', { detail: 'portfolio' })); }} className="text-blue-600 hover:underline">Portfolio</a>
           <span className="text-slate-300">|</span>
           <a href="#" className="text-blue-600 hover:underline">Start Free Trial</a>
         </div>

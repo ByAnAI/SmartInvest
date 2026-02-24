@@ -95,30 +95,50 @@ export const deleteUserFully = async (uid: string) => {
 // --- PORTFOLIO MANAGEMENT ---
 
 export const getPortfolio = async (uid: string): Promise<PortfolioItem[]> => {
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('portfolios')
         .select('*')
         .eq('user_id', uid);
-    return (data || []) as PortfolioItem[];
+    if (error) throw error;
+    const rows = (data || []) as any[];
+    return rows.map((r) => ({
+        symbol: r.symbol,
+        shares: Number(r.shares),
+        avgCost: Number(r.avgCost ?? r.avg_cost ?? 0),
+    }));
 };
 
 export const addStock = async (uid: string, item: PortfolioItem) => {
-    await supabase
+    const { error } = await supabase
         .from('portfolios')
         .upsert({
             user_id: uid,
             symbol: item.symbol,
             shares: item.shares,
-            avgCost: item.avgCost
+            avg_cost: item.avgCost
         }, { onConflict: 'user_id, symbol' });
+    if (error) throw error;
 };
 
 export const removeStock = async (uid: string, symbol: string) => {
-    await supabase
+    const { error } = await supabase
         .from('portfolios')
         .delete()
         .eq('user_id', uid)
         .eq('symbol', symbol);
+    if (error) throw error;
+};
+
+export const updateStock = async (uid: string, symbol: string, updates: { shares?: number }) => {
+    const payload: Record<string, unknown> = {};
+    if (updates.shares !== undefined) payload.shares = updates.shares;
+    if (Object.keys(payload).length === 0) return;
+    const { error } = await supabase
+        .from('portfolios')
+        .update(payload)
+        .eq('user_id', uid)
+        .eq('symbol', symbol);
+    if (error) throw error;
 };
 
 export const clearPortfolio = async (uid: string) => {

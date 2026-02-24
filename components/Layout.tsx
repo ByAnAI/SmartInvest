@@ -1,17 +1,17 @@
 
 import React from 'react';
-import { signOut } from 'firebase/auth';
-import { auth } from '../services/firebase';
+import { supabase } from '../services/supabase';
 
 interface LayoutProps {
   children: React.ReactNode;
   activeTab: string;
   setActiveTab: (tab: string) => void;
   isAdmin?: boolean;
+  user?: { email?: string | null; user_metadata?: { full_name?: string }; id?: string } | null;
+  userMetadata?: { displayName?: string } | null;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAdmin }) => {
-  const user = auth.currentUser;
+const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAdmin, user, userMetadata }) => {
   
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
@@ -31,8 +31,8 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
-      // App.tsx onAuthStateChanged will handle redirection
+      await supabase.auth.signOut();
+      // App.tsx onAuthStateChange will handle redirection
     } catch (error) {
       console.error("Logout Error:", error);
     }
@@ -70,15 +70,15 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
             <div className="flex items-center space-x-3">
               <div className={`w-8 h-8 rounded-full ${isAdmin ? 'bg-indigo-500' : 'bg-indigo-500/20'} flex items-center justify-center text-white border border-indigo-500/20 font-bold overflow-hidden shadow-sm`}>
-                {user?.photoURL ? (
-                    <img src={user.photoURL} alt="Avatar" className="w-full h-full object-cover" />
+                {(user?.user_metadata as any)?.avatar_url ? (
+                    <img src={(user?.user_metadata as any).avatar_url} alt="Avatar" className="w-full h-full object-cover" />
                 ) : (
-                    (user?.displayName?.[0] || user?.email?.[0] || 'U').toUpperCase()
+                    (userMetadata?.displayName?.[0] || user?.user_metadata?.full_name?.[0] || user?.email?.[0] || 'U').toUpperCase()
                 )}
               </div>
               <div className="overflow-hidden">
                 <div className="flex items-center space-x-2">
-                  <p className="text-xs font-bold text-white truncate">{user?.displayName || 'Investor'}</p>
+                  <p className="text-xs font-bold text-white truncate">{userMetadata?.displayName || user?.user_metadata?.full_name || 'Investor'}</p>
                   {isAdmin && (
                     <span className="text-[7px] font-black bg-indigo-500 text-white px-1 py-0.5 rounded tracking-tighter uppercase">Admin</span>
                   )}
