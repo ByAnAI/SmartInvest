@@ -102,10 +102,8 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
           email,
           password,
           options: {
-            data: {
-              full_name: email.split('@')[0]
-            }
-          }
+            data: { full_name: email.split('@')[0] },
+          },
         });
 
         if (error) throw error;
@@ -114,12 +112,13 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
+        const redirectTo = `${window.location.origin}${window.location.pathname || '/'}?mode=reset-password`;
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}?mode=reset-password`,
+          redirectTo,
         });
         if (error) throw error;
-        setSuccessMsg("Recovery link dispatched. Check your inbox.");
-        setTimeout(() => setMode('login'), 4000);
+        setSuccessMsg("Recovery link requested. If you don't receive an email, Supabase may be using its default mail (no real delivery). Add custom SMTP in Project Settings → Auth → SMTP in your Supabase dashboard.");
+        setTimeout(() => setMode('login'), 8000);
         setLoading(false);
       } else if (mode === 'reset-password') {
         if (newPassword !== confirmPassword) throw new Error("Passwords do not match.");
