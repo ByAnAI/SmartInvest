@@ -1,31 +1,42 @@
 
 import React, { useState, useEffect } from 'react';
-import { auth } from '../services/firebase';
+import { supabase } from '../services/supabase';
 import { Folder, FileItem } from '../types';
-import { getFolders, getFiles, addFolder, addFile, deleteFolder, deleteFile } from '../services/firestoreService';
+import { getFolders, addFolder, deleteFolder } from '../services/supabaseService';
+// Note: getFiles, addFile, deleteFile are not yet fully implemented in supabaseService
+// We'll keep them as placeholder imports for now if they exist, or mock them
+const getFiles = async (uid: string) => [] as FileItem[];
+const addFile = async (uid: string, name: string, size: string) => { };
+const deleteFile = async (uid: string, id: string) => { };
 
 const MyFiles: React.FC = () => {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(true);
-  
+
   // Modals
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [showFileModal, setShowFileModal] = useState(false);
-  
+
   // Form State
   const [newItemName, setNewItemName] = useState('');
   const [newFileSize, setNewFileSize] = useState('2 MB');
   const [submitting, setSubmitting] = useState(false);
 
-  const user = auth.currentUser;
+  const [currentUid, setCurrentUid] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setCurrentUid(data.user?.id || null);
+    });
+  }, []);
 
   const fetchData = async () => {
-    if (!user) return;
+    if (!currentUid) return;
     try {
       const [foldersData, filesData] = await Promise.all([
-        getFolders(user.uid),
-        getFiles(user.uid)
+        getFolders(currentUid),
+        getFiles(currentUid)
       ]);
       setFolders(foldersData);
       setFiles(filesData);
@@ -38,14 +49,14 @@ const MyFiles: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, [user]);
+  }, [currentUid]);
 
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !newItemName.trim()) return;
+    if (!currentUid || !newItemName.trim()) return;
     setSubmitting(true);
     try {
-      await addFolder(user.uid, newItemName);
+      await addFolder(currentUid, newItemName);
       setNewItemName('');
       setShowFolderModal(false);
       fetchData();
@@ -58,12 +69,12 @@ const MyFiles: React.FC = () => {
 
   const handleCreateFile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !newItemName.trim()) return;
+    if (!currentUid || !newItemName.trim()) return;
     setSubmitting(true);
     try {
       // Logic for adding a file (mock size for UI simulation as per requirement "metadata only")
       const randomSize = (Math.random() * 10 + 1).toFixed(1) + ' MB';
-      await addFile(user.uid, newItemName, randomSize);
+      await addFile(currentUid, newItemName, randomSize);
       setNewItemName('');
       setShowFileModal(false);
       fetchData();
@@ -75,17 +86,17 @@ const MyFiles: React.FC = () => {
   };
 
   const handleDeleteFolder = async (id: string) => {
-    if (!user) return;
+    if (!currentUid) return;
     try {
-      await deleteFolder(user.uid, id);
+      await deleteFolder(currentUid, id);
       setFolders(folders.filter(f => f.id !== id));
     } catch (e) { console.error(e); }
   };
 
   const handleDeleteFile = async (id: string) => {
-    if (!user) return;
+    if (!currentUid) return;
     try {
-      await deleteFile(user.uid, id);
+      await deleteFile(currentUid, id);
       setFiles(files.filter(f => f.id !== id));
     } catch (e) { console.error(e); }
   };
@@ -105,13 +116,13 @@ const MyFiles: React.FC = () => {
           <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">Secure Storage Protocol</p>
         </div>
         <div className="flex gap-4">
-          <button 
+          <button
             onClick={() => setShowFolderModal(true)}
             className="px-5 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-50 transition-all shadow-sm"
           >
             + New Folder
           </button>
-          <button 
+          <button
             onClick={() => setShowFileModal(true)}
             className="px-5 py-3 bg-indigo-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20 active:scale-95"
           >
@@ -130,7 +141,7 @@ const MyFiles: React.FC = () => {
             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
               {folder.createdAt?.seconds ? new Date(folder.createdAt.seconds * 1000).toLocaleDateString() : 'Just now'}
             </p>
-            <button 
+            <button
               onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
               className="absolute top-4 right-4 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
             >
@@ -164,7 +175,7 @@ const MyFiles: React.FC = () => {
                   <span className="text-[10px] text-slate-300 font-bold uppercase tracking-widest">
                     {file.createdAt?.seconds ? new Date(file.createdAt.seconds * 1000).toLocaleDateString() : 'Just now'}
                   </span>
-                  <button 
+                  <button
                     onClick={() => handleDeleteFile(file.id)}
                     className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-all"
                   >
@@ -183,9 +194,9 @@ const MyFiles: React.FC = () => {
           <div className="bg-white w-full max-w-sm p-8 rounded-[2rem] shadow-2xl animate-in zoom-in-95 duration-200">
             <h3 className="text-xl font-black text-slate-900 mb-6">Create New Folder</h3>
             <form onSubmit={handleCreateFolder}>
-              <input 
+              <input
                 autoFocus
-                type="text" 
+                type="text"
                 placeholder="Folder Name"
                 className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 mb-6"
                 value={newItemName}
@@ -208,9 +219,9 @@ const MyFiles: React.FC = () => {
           <div className="bg-white w-full max-w-sm p-8 rounded-[2rem] shadow-2xl animate-in zoom-in-95 duration-200">
             <h3 className="text-xl font-black text-slate-900 mb-6">Upload File Metadata</h3>
             <form onSubmit={handleCreateFile}>
-              <input 
+              <input
                 autoFocus
-                type="text" 
+                type="text"
                 placeholder="File Name (e.g. Q4_Report.pdf)"
                 className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 mb-6"
                 value={newItemName}

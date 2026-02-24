@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { auth } from './services/firebase';
-import { initializeUser } from './services/firestoreService';
+import { supabase } from './services/supabase';
+import { initializeUser } from './services/supabaseService';
 import Layout from './components/Layout';
 import Dashboard from './components/Dashboard';
 import AIAnalysis from './components/AIAnalysis';
@@ -18,7 +17,7 @@ import { UserMetadata } from './types';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<any | null>(null);
   const [userMetadata, setUserMetadata] = useState<UserMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAuth, setShowAuth] = useState(false);
@@ -26,66 +25,38 @@ const App: React.FC = () => {
   const [authActionCode, setAuthActionCode] = useState<string | null>(null);
 
   /**
-   * Detect Firebase Auth Actions (Action Codes) from URL
-   */
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const mode = urlParams.get('mode');
-    const oobCode = urlParams.get('oobCode');
-
-    if (mode && oobCode) {
-      setAuthActionCode(oobCode);
-      if (mode === 'resetPassword') {
-        setAuthMode('reset-password');
-        setShowAuth(true);
-      } else if (mode === 'verifyEmail') {
-        setAuthMode('verify-email');
-        setShowAuth(true);
-      }
-    }
-  }, []);
-
-  /**
    * Auth State Observer
    */
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setLoading(true);
-      try {
-        // STRICT CHECK: Only allow access if user is present AND email is verified
-        if (currentUser && currentUser.emailVerified) {
-          setUser(currentUser);
-          // We are not saving profile data to DB yet as requested, 
-          // but we initialize the mock service for the UI to function.
-          const metadata = await initializeUser(
-            currentUser.uid,
-            currentUser.email,
-            currentUser.displayName
-          );
+    setLoading(true);
 
-          if (metadata.status === 'disabled') {
-            await signOut(auth);
-            setUser(null);
-            setUserMetadata(null);
-          } else {
-            setUserMetadata(metadata);
-          }
-        } else {
-          // Block access for unverified users. 
-          // Note: Auth.tsx handles the explicit signOut calls during the login/signup interaction
-          // to prompt the verification screen. Here we ensure they don't see the dashboard.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      const currentUser = session?.user;
+
+      if (currentUser) {
+        setUser(currentUser);
+        // Initialize user profile in database
+        const metadata = await initializeUser(
+          currentUser.id,
+          currentUser.email,
+          currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0]
+        );
+
+        if (metadata.status === 'disabled') {
+          await supabase.auth.signOut();
           setUser(null);
           setUserMetadata(null);
+        } else {
+          setUserMetadata(metadata);
         }
-      } catch (err) {
-        console.error("Auth State Error", err);
+      } else {
         setUser(null);
-      } finally {
-        setLoading(false);
+        setUserMetadata(null);
       }
+      setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleAuthOpen = (mode: 'login' | 'signup') => {

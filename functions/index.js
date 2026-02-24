@@ -36,8 +36,15 @@ exports.deleteUserAccount = functions.https.onCall(async (data, context) => {
     }
 
     try {
-        // 3. Delete from Firebase Authentication
-        await admin.auth().deleteUser(targetUid);
+        // 3. Delete from Firebase Authentication (Catch error if user already deleted)
+        try {
+            await admin.auth().deleteUser(targetUid);
+        } catch (authError) {
+            if (authError.code !== 'auth/user-not-found') {
+                throw authError;
+            }
+            console.log(`User ${targetUid} already removed from Auth.`);
+        }
 
         // 4. Delete from Firestore
         await admin.firestore().collection("users").doc(targetUid).delete();

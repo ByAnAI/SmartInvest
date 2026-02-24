@@ -91,8 +91,9 @@ export const deleteUserFully = async (uid: string) => {
     return result.data;
   } catch (error) {
     console.error("Full Deletion Failed:", error);
-    // Fallback to record deletion if function fails or isn't deployed
-    await deleteUserRecord(uid);
+    // DO NOT fallback to record-only deletion here. 
+    // We want the function to succeed (deleting both Auth and DB) 
+    // or fail completely so the admin is aware the user still exists.
     throw error;
   }
 };

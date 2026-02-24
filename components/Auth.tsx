@@ -1,20 +1,5 @@
-
 import React, { useState, useEffect } from 'react';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
-  signInWithPopup,
-  setPersistence,
-  browserLocalPersistence,
-  browserSessionPersistence,
-  sendEmailVerification,
-  signOut,
-  applyActionCode,
-  confirmPasswordReset
-} from 'firebase/auth';
-import { auth, googleProvider } from '../services/firebase';
-import { markUserAsVerified } from '../services/firestoreService';
+import { supabase } from '../services/supabase';
 
 interface AuthProps {
   onClose: () => void;
@@ -60,30 +45,21 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
     }
   }, [initialError]);
 
-  const handleGoogleSignIn = async () => {
+  const loginWithGoogle = async () => {
     setLoading(true);
     setError('');
 
     try {
-      // Apply persistence based on the checkbox state even for Google Sign In
-      await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
-      const res = await signInWithPopup(auth, googleProvider);
-
-      // Enforce email verification for Google Sign In as well (though usually verified)
-      if (!res.user.emailVerified) {
-        await signOut(auth);
-        setVerificationSent(true);
-        return;
-      }
-
-      onClose();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (error) throw error;
     } catch (err: any) {
       console.error("Google Auth Error:", err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        setError("Sign-in cancelled.");
-      } else {
-        setError("Google Sign-in failed. Please try again.");
-      }
+      setError(err.message || "Google Sign-in failed. Please try again.");
       setLoading(false);
     }
   };
@@ -96,7 +72,6 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
     try {
       if (mode === 'login') {
-        // Handle Remember Me (Local Storage for Email AND Password)
         if (rememberMe) {
           localStorage.setItem('rememberedEmail', email);
           localStorage.setItem('rememberedPassword', password);
@@ -105,87 +80,97 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
           localStorage.removeItem('rememberedPassword');
         }
 
-        // Set persistence before signing in
-        await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
 
-        // Check Email Verification
-        if (!userCredential.user.emailVerified) {
-          // Explicitly resend verification if they try to login while unverified
-          await sendEmailVerification(userCredential.user);
-          await signOut(auth);
-          setVerificationSent(true);
+        if (error) throw error;
+
+        // Check if email is verified (Supabase handles this in settings, but we can check session)
+        if (data.user && !data.user.email_confirmed_at) {
+          await supabase.auth.signOut();
+          setError("Your email is not verified. Please check your inbox.");
           setLoading(false);
           return;
         }
 
-        // Successful login automatically triggers onAuthStateChanged in App.tsx
         onClose();
 
       } else if (mode === 'signup') {
-        // Signup
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              full_name: email.split('@')[0]
+            }
+          }
+        });
 
-        // Send Verification Email - Simplified for reliability
-        await sendEmailVerification(userCredential.user);
-
-        // Sign out immediately to prevent auto-login
-        await signOut(auth);
+        if (error) throw error;
 
         setVerificationSent(true);
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
-        // Send Password Reset Email
-        const actionCodeSettings = {
-          url: window.location.origin, // Return to base URL which handles the action
-          handleCodeInApp: true,
-        };
-        await sendPasswordResetEmail(auth, email, actionCodeSettings);
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}?mode=reset-password`,
+        });
+        if (error) throw error;
         setSuccessMsg("Recovery link dispatched. Check your inbox.");
         setTimeout(() => setMode('login'), 4000);
         setLoading(false);
       } else if (mode === 'reset-password') {
-        if (!actionCode) throw new Error("Missing reset code.");
         if (newPassword !== confirmPassword) throw new Error("Passwords do not match.");
 
-        await confirmPasswordReset(auth, actionCode, newPassword);
+        const { error } = await supabase.auth.updateUser({
+          password: newPassword
+        });
+        if (error) throw error;
+
         setSuccessMsg("Password updated successfully. You can now log in.");
         setTimeout(() => setMode('login'), 3000);
         setLoading(false);
-      } else if (mode === 'verify-email') {
-        if (!actionCode) throw new Error("Missing verification code.");
-
-        await applyActionCode(auth, actionCode);
-
-        // After successful verification, we should update Firestore metadata if user is logged in
-        // or just show success and let them login.
-        // Firebase Auth automatically signs the user out after applyActionCode usually,
-        // but we want to make sure the DB is updated.
-        // However, we don't have the UID here unless they were just signed up.
-        // For reliability, we'll mark as verified upon their NEXT login in App.tsx 
-        // OR if they are currently cached.
-
-        setSuccessMsg("Email verified successfully! You can now access your dashboard.");
-        setTimeout(() => setMode('login'), 4000);
-        setLoading(false);
       }
     } catch (err: any) {
-      console.error("Auth Error Code:", err.code, err.message);
+      console.error("Auth Error:", err.message);
       setLoading(false);
 
-      // Specific error mapping for wrong credentials as requested
-      if (mode === 'login' && (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential')) {
-        setError("Invalid email or password. Please try again.");
-      } else if (mode === 'signup' && err.code === 'auth/email-already-in-use') {
-        setError("An account with this email already exists.");
-      } else if (err.code === 'auth/expired-action-code') {
-        setError("The link has expired. Please request a new one.");
-      } else if (err.code === 'auth/invalid-action-code') {
-        setError("The link is invalid. Please request a new one.");
+      // Specialize rate limit error message
+      if (err.message?.toLowerCase().includes("rate limit exceeded")) {
+        setError("Email rate limit exceeded. If you are using Supabase's default email service, please wait an hour or configure a custom SMTP provider in the dashboard.");
       } else {
         setError(err.message || "An unexpected error occurred.");
       }
+    }
+  };
+
+  const handleResendEmail = async () => {
+    setLoading(true);
+    setError('');
+    setSuccessMsg('');
+
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email,
+        options: {
+          emailRedirectTo: window.location.origin,
+        }
+      });
+
+      if (error) throw error;
+      setSuccessMsg("Verification email resent. Please check your inbox.");
+    } catch (err: any) {
+      console.error("Resend Error:", err.message);
+      if (err.message?.toLowerCase().includes("rate limit exceeded")) {
+        setError("Rate limit exceeded. Please wait before trying again or use a custom SMTP.");
+      } else {
+        setError(err.message || "Failed to resend verification email.");
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -208,12 +193,25 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
             Check your inbox (and spam). Once you click the link in the email, you can return here and log in.
           </p>
 
-          <button
-            onClick={() => { setVerificationSent(false); setMode('login'); }}
-            className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-xl transition-all active:scale-95"
-          >
-            I've Verified, Continue to Log In
-          </button>
+          <div className="space-y-4">
+            <button
+              onClick={() => { setVerificationSent(false); setMode('login'); }}
+              className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-xl transition-all active:scale-95"
+            >
+              I've Verified, Continue to Log In
+            </button>
+
+            <button
+              onClick={handleResendEmail}
+              disabled={loading}
+              className="w-full bg-slate-100 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-200 transition-all active:scale-95 disabled:opacity-50"
+            >
+              {loading ? 'Resending...' : 'Resend Verification Email'}
+            </button>
+
+            {error && <p className="text-rose-500 text-[10px] font-bold mt-2 uppercase">⚠️ {error}</p>}
+            {successMsg && <p className="text-emerald-500 text-[10px] font-bold mt-2 uppercase">✓ {successMsg}</p>}
+          </div>
         </div>
       </div>
     );
@@ -365,7 +363,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
               <button
                 type="button"
-                onClick={handleGoogleSignIn}
+                onClick={loginWithGoogle}
                 disabled={loading}
                 className="w-full bg-white border-2 border-slate-100 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-50 hover:border-slate-200 transition-all flex items-center justify-center space-x-3 active:scale-95"
               >

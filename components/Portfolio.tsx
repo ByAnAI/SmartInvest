@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { getPortfolio, addStock, removeStock, clearPortfolio } from '../services/firestoreService';
+import { getPortfolio, addStock, removeStock, clearPortfolio } from '../services/supabaseService';
 import { PortfolioItem } from '../types';
-import { auth } from '../services/firebase';
+import { supabase } from '../services/supabase';
 import { SP500_TICKERS } from './SP500Data';
 import { NASDAQ_TICKERS } from './NasdaqData';
 import { CRYPTO_TICKERS } from './CryptoData';
@@ -46,7 +46,11 @@ const TICKER_DIRECTORY = [
   { symbol: 'ZINC', name: 'Zinc', price: 2350.00, category: 'COMMODITIES' },
 ];
 
-const Portfolio: React.FC = () => {
+interface PortfolioProps {
+  userId?: string;
+}
+
+const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [marketPrices, setMarketPrices] = useState<Record<string, number>>({});
   const [lastPrices, setLastPrices] = useState<Record<string, number>>({});
@@ -62,7 +66,18 @@ const Portfolio: React.FC = () => {
   const [liveFxRates, setLiveFxRates] = useState<Record<string, number>>({});
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const user = auth.currentUser;
+  // Use the passed userId or fallback to current session
+  const [currentUid, setCurrentUid] = useState<string | undefined>(userId);
+
+  useEffect(() => {
+    if (!currentUid) {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user) {
+          setCurrentUid(session.user.id);
+        }
+      });
+    }
+  }, [userId, currentUid]);
 
   // Fetch live forex rates on mount
   useEffect(() => {
@@ -121,9 +136,9 @@ const Portfolio: React.FC = () => {
   }, []);
 
   const loadPortfolio = async () => {
-    if (!user) return;
+    if (!currentUid) return;
     try {
-      const data = await getPortfolio(user.uid);
+      const data = await getPortfolio(currentUid);
       setItems(data);
       // Initialize market prices with current directory data or avg cost
       const initialPrices: Record<string, number> = {};
@@ -140,7 +155,7 @@ const Portfolio: React.FC = () => {
     }
   };
 
-  useEffect(() => { loadPortfolio(); }, [user]);
+  useEffect(() => { loadPortfolio(); }, [currentUid]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -181,11 +196,11 @@ const Portfolio: React.FC = () => {
   }, [searchQuery, items, selectedCategory, liveFxRates]);
 
   const handleAddTicker = async (stock: typeof TICKER_DIRECTORY[0]) => {
-    if (!user) return;
+    if (!currentUid) return;
     setIsAdding(stock.symbol);
     try {
       const newItem: PortfolioItem = { symbol: stock.symbol, shares: 1, avgCost: stock.price };
-      await addStock(user.uid, newItem);
+      await addStock(currentUid, newItem);
       await loadPortfolio();
       setSearchQuery('');
       setShowDropdown(false);
@@ -201,10 +216,10 @@ const Portfolio: React.FC = () => {
   };
 
   const handleConfirmRemove = async () => {
-    if (!user || !itemToDelete) return;
+    if (!currentUid || !itemToDelete) return;
     setIsDeleting(itemToDelete);
     try {
-      await removeStock(user.uid, itemToDelete);
+      await removeStock(currentUid, itemToDelete);
       await loadPortfolio();
     } catch (e: any) {
       setError(e.message);

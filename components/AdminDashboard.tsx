@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
-import { getAllUsers, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData } from '../services/firestoreService';
+import { getAllUsers, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData } from '../services/supabaseService';
 import { UserMetadata } from '../types';
-import { auth } from '../services/firebase';
+import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
 
 const AdminDashboard: React.FC = () => {
@@ -18,7 +18,13 @@ const AdminDashboard: React.FC = () => {
   const [uploadingMarket, setUploadingMarket] = useState(false);
   const [file, setFile] = useState<File | null>(null);
 
-  const currentUser = auth.currentUser;
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setCurrentUser(data.user);
+    });
+  }, []);
 
   const fetchUsers = async (forceRefresh = false) => {
     if (forceRefresh) setIsSyncing(true);
