@@ -66,10 +66,19 @@ const App: React.FC = () => {
     return () => window.removeEventListener('changeTab', handler as EventListener);
   }, []);
 
-  const handleAuthOpen = (mode: 'login' | 'signup') => {
+  const handleAuthOpen = (mode: 'login' | 'signup' | 'reset-password') => {
     setAuthMode(mode);
     setShowAuth(true);
   };
+
+  // When user clicks password-reset link in email, they land with ?mode=reset-password — open Auth in reset mode
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mode') === 'reset-password') {
+      setAuthMode('reset-password');
+      setShowAuth(true);
+    }
+  }, []);
 
   // Logic to determine admin status: 
   // 1. Hard check for specific master email

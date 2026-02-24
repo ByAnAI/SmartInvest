@@ -117,8 +117,8 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
           redirectTo,
         });
         if (error) throw error;
-        setSuccessMsg("Recovery link requested. If you don't receive an email, Supabase may be using its default mail (no real delivery). Add custom SMTP in Project Settings → Auth → SMTP in your Supabase dashboard.");
-        setTimeout(() => setMode('login'), 8000);
+        setSuccessMsg("Recovery link sent. Check your inbox (and spam).");
+        setTimeout(() => setMode('login'), 6000);
         setLoading(false);
       } else if (mode === 'reset-password') {
         if (newPassword !== confirmPassword) throw new Error("Passwords do not match.");
@@ -136,11 +136,13 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       console.error("Auth Error:", err.message);
       setLoading(false);
 
-      // Specialize rate limit error message
-      if (err.message?.toLowerCase().includes("rate limit exceeded")) {
-        setError("Email rate limit exceeded. If you are using Supabase's default email service, please wait an hour or configure a custom SMTP provider in the dashboard.");
+      const msg = (err?.message || "").toLowerCase();
+      if (msg.includes("rate limit exceeded")) {
+        setError("Email rate limit exceeded. Wait an hour or add custom SMTP in Supabase (Project Settings → Auth → SMTP).");
+      } else if (msg.includes("recovery email") || msg.includes("error sending")) {
+        setError("Recovery email could not be sent. In Supabase Dashboard: 1) Project Settings → Auth → SMTP — enable custom SMTP (SendGrid, Resend, etc.). 2) Authentication → URL Configuration — add this redirect URL: " + `${window.location.origin}${window.location.pathname || '/'}?mode=reset-password`);
       } else {
-        setError(err.message || "An unexpected error occurred.");
+        setError(err?.message || "An unexpected error occurred.");
       }
     }
   };
