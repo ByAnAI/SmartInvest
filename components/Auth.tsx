@@ -122,13 +122,20 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setLoading(false);
       } else if (mode === 'reset-password') {
         if (newPassword !== confirmPassword) throw new Error("Passwords do not match.");
+        if (newPassword.length < 6) throw new Error("Password must be at least 6 characters.");
+
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error("Recovery session expired. Please use Forgot Password again to get a new link.");
 
         const { error } = await supabase.auth.updateUser({
-          password: newPassword
+          password: newPassword,
         });
         if (error) throw error;
 
-        setSuccessMsg("Password updated successfully. You can now log in.");
+        await supabase.auth.refreshSession();
+        setSuccessMsg("Password saved. You can log in with your new password.");
+        setNewPassword("");
+        setConfirmPassword("");
         setTimeout(() => setMode('login'), 3000);
         setLoading(false);
       }
