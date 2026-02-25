@@ -25,23 +25,28 @@ const App: React.FC = () => {
   const [authActionCode, setAuthActionCode] = useState<string | null>(null);
 
   /**
-   * Auth State Observer
+   * Auth: resolve session quickly so UI shows, then load profile in background.
    */
   useEffect(() => {
     setLoading(true);
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      const currentUser = session?.user;
+    const applySession = async (session: { user: any } | null) => {
+      const currentUser = session?.user ?? null;
+      setUser(currentUser);
+      setLoading(false);
 
-      if (currentUser) {
-        setUser(currentUser);
-        // Initialize user profile in database
+      if (!currentUser) {
+        setUserMetadata(null);
+        return;
+      }
+
+      // Load profile in background so we don't block initial paint
+      try {
         const metadata = await initializeUser(
           currentUser.id,
           currentUser.email,
           currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0]
         );
-
         if (metadata.status === 'disabled') {
           await supabase.auth.signOut();
           setUser(null);
@@ -49,11 +54,15 @@ const App: React.FC = () => {
         } else {
           setUserMetadata(metadata);
         }
-      } else {
-        setUser(null);
+      } catch {
         setUserMetadata(null);
       }
-      setLoading(false);
+    };
+
+    supabase.auth.getSession().then(({ data: { session } }) => applySession(session));
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      applySession(session);
     });
 
     return () => subscription.unsubscribe();
