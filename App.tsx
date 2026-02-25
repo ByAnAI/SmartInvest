@@ -75,8 +75,12 @@ const App: React.FC = () => {
         setUserMetadata(null);
       });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       applySession(session);
+      if (event === 'PASSWORD_RECOVERY') {
+        setAuthMode('reset-password');
+        setShowAuth(true);
+      }
     });
 
     return () => {

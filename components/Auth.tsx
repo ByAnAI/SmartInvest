@@ -112,8 +112,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
+        const redirectTo = `${window.location.origin}/?mode=reset-password`;
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: window.location.origin + "/?mode=reset-password",
+          redirectTo,
         });
         if (error) throw error;
         setSuccessMsg("Recovery link sent. Check your inbox (and spam).");
@@ -139,7 +140,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       if (msg.includes("rate limit exceeded")) {
         setError("Email rate limit exceeded. Wait an hour or add custom SMTP in Supabase (Project Settings → Auth → SMTP).");
       } else if (msg.includes("recovery email") || msg.includes("error sending")) {
-        setError("Recovery email could not be sent. In Supabase Dashboard: 1) Project Settings → Auth → SMTP — enable custom SMTP (SendGrid, Resend, etc.). 2) Authentication → URL Configuration — add this redirect URL: " + `${window.location.origin}${window.location.pathname || '/'}?mode=reset-password`);
+        setError("Recovery email could not be sent. In Supabase Dashboard: 1) Project Settings → Auth → SMTP — enable custom SMTP (SendGrid, Resend, etc.). 2) Authentication → URL Configuration — add this redirect URL: " + `${window.location.origin}/?mode=reset-password`);
       } else {
         setError(err?.message || "An unexpected error occurred.");
       }
