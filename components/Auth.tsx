@@ -292,7 +292,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
               </div>
             )}
 
-            {mode !== 'forgot-password' && (
+            {mode !== 'forgot-password' && mode !== 'reset-password' && (
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center ml-1">
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Password</label>
@@ -391,18 +391,20 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
             </>
           )}
 
-          <div className="mt-8 text-center">
-            <button
-              onClick={() => {
-                setMode(mode === 'login' ? 'signup' : 'login');
-                setError('');
-                setSuccessMsg('');
-              }}
-              className="text-[10px] font-black text-emerald-600 hover:underline uppercase tracking-widest"
-            >
-              {mode === 'login' ? 'Establish New Profile' : 'Return to Authorization'}
-            </button>
-          </div>
+          {(mode === 'login' || mode === 'signup') && (
+            <div className="mt-8 text-center">
+              <button
+                onClick={() => {
+                  setMode(mode === 'login' ? 'signup' : 'login');
+                  setError('');
+                  setSuccessMsg('');
+                }}
+                className="text-[10px] font-black text-emerald-600 hover:underline uppercase tracking-widest"
+              >
+                {mode === 'login' ? 'Establish New Profile' : 'Return to Authorization'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
