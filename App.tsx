@@ -26,11 +26,12 @@ const App: React.FC = () => {
 
   /**
    * Auth: resolve session quickly so UI shows, then load profile in background.
+   * Timeout so we never stay stuck on "Initializing" if Supabase is slow or unreachable.
    */
   useEffect(() => {
     setLoading(true);
 
-    const applySession = async (session: { user: any } | null) => {
+    const applySession = (session: { user: any } | null) => {
       const currentUser = session?.user ?? null;
       setUser(currentUser);
       setLoading(false);
@@ -41,31 +42,47 @@ const App: React.FC = () => {
       }
 
       // Load profile in background so we don't block initial paint
-      try {
-        const metadata = await initializeUser(
-          currentUser.id,
-          currentUser.email,
-          currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0]
-        );
+      initializeUser(
+        currentUser.id,
+        currentUser.email,
+        currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0]
+      ).then((metadata) => {
         if (metadata.status === 'disabled') {
-          await supabase.auth.signOut();
+          supabase.auth.signOut();
           setUser(null);
           setUserMetadata(null);
         } else {
           setUserMetadata(metadata);
         }
-      } catch {
-        setUserMetadata(null);
-      }
+      }).catch(() => setUserMetadata(null));
     };
 
-    supabase.auth.getSession().then(({ data: { session } }) => applySession(session));
+    const timeout = setTimeout(() => {
+      setLoading(false);
+      setUser(null);
+      setUserMetadata(null);
+    }, 5000);
+
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => {
+        clearTimeout(timeout);
+        applySession(session);
+      })
+      .catch(() => {
+        clearTimeout(timeout);
+        setLoading(false);
+        setUser(null);
+        setUserMetadata(null);
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       applySession(session);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      clearTimeout(timeout);
+      subscription.unsubscribe();
+    };
   }, []);
 
   // Allow child components to change tabs via a custom event
