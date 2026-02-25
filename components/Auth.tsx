@@ -113,7 +113,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
       } else if (mode === 'forgot-password') {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: "http://localhost:3000/?mode=reset-password",
+          redirectTo: window.location.origin + "/?mode=reset-password",
         });
         if (error) throw error;
         setSuccessMsg("Recovery link sent. Check your inbox (and spam).");
