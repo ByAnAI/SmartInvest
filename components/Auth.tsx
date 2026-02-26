@@ -177,7 +177,12 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
-        const redirectTo = `${window.location.origin}/?mode=reset-password`;
+        // In local testing, send reset link to localhost so you don't hit a paused deployed site (e.g. Netlify)
+        const isLocalTesting = import.meta.env.VITE_LOCAL_TESTING === 'true';
+        const baseUrl = isLocalTesting
+          ? (import.meta.env.VITE_APP_URL || 'http://localhost:3000').replace(/\/$/, '')
+          : window.location.origin;
+        const redirectTo = `${baseUrl}/?mode=reset-password`;
         const { error } = await supabase.auth.resetPasswordForEmail(emailNormalized, {
           redirectTo,
         });
