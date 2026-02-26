@@ -78,8 +78,11 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
           }
           setRecoverySessionReady(true);
           setError('');
-          // Remove hash from URL so token is not left in address bar
-          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+          // Remove hash and ?mode=reset-password from URL so token is not exposed and next open shows login
+          const url = new URL(window.location.href);
+          url.hash = '';
+          url.searchParams.delete('mode');
+          window.history.replaceState(null, '', url.pathname + url.search);
         } catch (e: any) {
           console.error('Recovery session setup failed:', e);
           setError('This reset link is invalid or expired. Please use Forgot Password again to get a new link.');
@@ -87,11 +90,16 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         return;
       }
 
-      // Client may have already parsed the hash; check session after a short delay
+      // Client may have already parsed the hash; check session
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
         setRecoverySessionReady(true);
-        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        const url = new URL(window.location.href);
+        url.hash = '';
+        url.searchParams.delete('mode');
+        window.history.replaceState(null, '', url.pathname + url.search);
+      } else {
+        setError('This reset link is invalid or expired. Please use Forgot Password again to get a new link.');
       }
     };
 
@@ -124,18 +132,22 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
     setSuccessMsg('');
 
     try {
+      // Supabase treats email as case-sensitive; normalize so login matches signup
+      const emailNormalized = (email || '').trim().toLowerCase();
+      const passwordTrimmed = (password || '').trim();
+
       if (mode === 'login') {
         if (rememberMe) {
-          localStorage.setItem('rememberedEmail', email);
-          localStorage.setItem('rememberedPassword', password);
+          localStorage.setItem('rememberedEmail', emailNormalized);
+          localStorage.setItem('rememberedPassword', passwordTrimmed);
         } else {
           localStorage.removeItem('rememberedEmail');
           localStorage.removeItem('rememberedPassword');
         }
 
         const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
+          email: emailNormalized,
+          password: passwordTrimmed,
         });
 
         if (error) throw error;
@@ -152,10 +164,10 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
       } else if (mode === 'signup') {
         const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
+          email: emailNormalized,
+          password: passwordTrimmed,
           options: {
-            data: { full_name: email.split('@')[0] },
+            data: { full_name: emailNormalized.split('@')[0] },
           },
         });
 
@@ -166,7 +178,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
       } else if (mode === 'forgot-password') {
         const redirectTo = `${window.location.origin}/?mode=reset-password`;
-        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        const { error } = await supabase.auth.resetPasswordForEmail(emailNormalized, {
           redirectTo,
         });
         if (error) throw error;
@@ -199,16 +211,15 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       console.error("Auth Error:", err.message);
       setLoading(false);
 
-      // After a password reset, user may still have old password in "Remember Me"; clear it so they can type the new one
       const msg = (err?.message || "").toLowerCase();
       if (msg.includes("invalid login credentials")) {
         localStorage.removeItem('rememberedPassword');
-      }
-      if (msg.includes("rate limit exceeded")) {
+        setError("Invalid login credentials. Use the exact email you signed up with (try lowercase) and your current password. If you just reset your password, use the new one.");
+      } else if (msg.includes("rate limit exceeded")) {
         setError("Email rate limit exceeded. Wait an hour or add custom SMTP in Supabase (Project Settings → Auth → SMTP).");
       } else if (msg.includes("recovery email") || msg.includes("error sending")) {
         setError("Recovery email could not be sent. In Supabase Dashboard: 1) Project Settings → Auth → SMTP — enable custom SMTP (SendGrid, Resend, etc.). 2) Authentication → URL Configuration — add this redirect URL: " + `${window.location.origin}/?mode=reset-password`);
-      } else {
+      } else if (!msg.includes("invalid login credentials")) {
         setError(err?.message || "An unexpected error occurred.");
       }
     }

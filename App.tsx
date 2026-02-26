@@ -157,9 +157,11 @@ const App: React.FC = () => {
           <Auth
             onClose={() => {
               setShowAuth(false);
-              // Clean up URL after action
-              if (authActionCode) {
-                window.history.replaceState({}, document.title, window.location.pathname);
+              // Clean up URL so reset-password link doesn't reopen reset form next time
+              const url = new URL(window.location.href);
+              url.searchParams.delete('mode');
+              if (url.search !== window.location.search || authActionCode) {
+                window.history.replaceState({}, document.title, url.pathname + url.search);
                 setAuthActionCode(null);
               }
             }}
