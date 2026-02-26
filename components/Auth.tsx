@@ -178,7 +178,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         if (newPassword.length < 6) throw new Error("Password must be at least 6 characters.");
 
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session) throw new Error("Recovery session expired. Please use Forgot Password again to get a new link.");
+        if (!session) throw new Error("Recovery session expired or invalid. Please use Forgot Password again to get a new link.");
 
         const { error } = await supabase.auth.updateUser({
           password: newPassword,
@@ -186,6 +186,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         if (error) throw error;
 
         await supabase.auth.refreshSession();
+        // Clear stored credentials so next login uses the new password (not the old one from Remember Me)
+        localStorage.removeItem('rememberedPassword');
+        localStorage.removeItem('rememberedEmail');
         setSuccessMsg("Password saved. You can log in with your new password.");
         setNewPassword("");
         setConfirmPassword("");
@@ -196,7 +199,11 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       console.error("Auth Error:", err.message);
       setLoading(false);
 
+      // After a password reset, user may still have old password in "Remember Me"; clear it so they can type the new one
       const msg = (err?.message || "").toLowerCase();
+      if (msg.includes("invalid login credentials")) {
+        localStorage.removeItem('rememberedPassword');
+      }
       if (msg.includes("rate limit exceeded")) {
         setError("Email rate limit exceeded. Wait an hour or add custom SMTP in Supabase (Project Settings → Auth → SMTP).");
       } else if (msg.includes("recovery email") || msg.includes("error sending")) {
@@ -321,6 +328,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
             {mode === 'reset-password' && (
               <div className="space-y-5">
+                {!recoverySessionReady && (
+                  <p className="text-amber-600 text-xs font-bold">Preparing reset… Please wait a moment.</p>
+                )}
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">New Password</label>
                   <input
@@ -330,6 +340,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
                     onChange={(e) => setNewPassword(e.target.value)}
                     className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
                     placeholder="••••••••"
+                    disabled={!recoverySessionReady}
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -341,6 +352,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
                     placeholder="••••••••"
+                    disabled={!recoverySessionReady}
                   />
                 </div>
               </div>
@@ -400,14 +412,14 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
 
             <button
               type="submit"
-              disabled={loading || (mode === 'forgot-password' && successMsg !== '')}
+              disabled={loading || (mode === 'forgot-password' && successMsg !== '') || (mode === 'reset-password' && !recoverySessionReady)}
               className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-2xl transition-all active:scale-95 disabled:opacity-50 mt-4"
             >
               {loading ? 'Processing...' :
                 mode === 'login' ? 'Authorize Dashboard' :
                   mode === 'signup' ? 'Create Vault' :
                     mode === 'forgot-password' ? 'Send Recovery Link' :
-                      mode === 'reset-password' ? 'Update Password' : 'Verify Account'}
+                      mode === 'reset-password' ? (recoverySessionReady ? 'Update Password' : 'Preparing…') : 'Verify Account'}
             </button>
           </form>
 
