@@ -32,6 +32,21 @@ SmartInvest AI is a state-of-the-art, AI-powered stock market intelligence dashb
 3. **Usage**:
    - Simply open `index.html` to launch the application.
 
+## 🧪 Local testing (no deployed services)
+
+To run everything locally and avoid hitting deployed Supabase or Firebase:
+
+1. Copy the env template: `cp env.local.example .env.local`
+2. Set `VITE_LOCAL_TESTING=true` and add your **local** Supabase URL and anon key (from `supabase start`).
+3. Run the app with local mode: `npm run dev:local` (or `npm run dev` with `.env.local` present).
+
+When `VITE_LOCAL_TESTING` is true:
+
+- **Supabase**: Only `VITE_SUPABASE_LOCAL_URL` and `VITE_SUPABASE_LOCAL_ANON_KEY` are used; the deployed project is never called.
+- **Firebase**: Auth and Firestore use emulators if `VITE_FIREBASE_AUTH_EMULATOR` (and optional Firestore vars) are set; start them with `firebase emulators:start --only auth,firestore`.
+
+Use `.env.local` for local/testing; it is gitignored and overrides `.env`.
+
 ## 🛡️ Security
 
 - All authentication flows are handled via Firebase.
