@@ -12,15 +12,21 @@ interface AuthProps {
 
 type AuthMode = 'login' | 'signup' | 'forgot-password' | 'reset-password' | 'verify-email';
 
+// Parse hash fragment for Supabase redirect params (e.g. password reset link)
+function getHashParam(name: string): string | null {
+  if (typeof window === 'undefined' || !window.location.hash) return null;
+  const match = window.location.hash.match(new RegExp(`[#&]${name}=([^&]*)`));
+  return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : null;
+}
+
 const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login', actionCode }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
 
-  // Initialize email from local storage if exists
+  // Initialize email from local storage if exists (never use remembered password for reset flow)
   const [email, setEmail] = useState(() => {
     return localStorage.getItem('rememberedEmail') || '';
   });
 
-  // Initialize password from local storage if exists
   const [password, setPassword] = useState(() => {
     return localStorage.getItem('rememberedPassword') || '';
   });
@@ -29,7 +35,6 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  // Default rememberMe to true if we have a saved email
   const [rememberMe, setRememberMe] = useState(() => {
     return !!localStorage.getItem('rememberedEmail');
   });
@@ -38,12 +43,60 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
   const [verificationSent, setVerificationSent] = useState(false);
+  const [recoverySessionReady, setRecoverySessionReady] = useState(false);
 
   useEffect(() => {
     if (initialError) {
       setError(initialError);
     }
   }, [initialError]);
+
+  // When user lands from reset-password email link: establish session from URL hash so updateUser() works
+  useEffect(() => {
+    if (initialMode !== 'reset-password') return;
+
+    const establishRecoverySession = async () => {
+      const access_token = getHashParam('access_token');
+      const refresh_token = getHashParam('refresh_token');
+      const type = getHashParam('type');
+      const token_hash = getHashParam('token_hash');
+
+      if (type === 'recovery' && (access_token || token_hash)) {
+        try {
+          if (token_hash) {
+            const { error: otpError } = await supabase.auth.verifyOtp({
+              token_hash,
+              type: 'recovery',
+            });
+            if (otpError) throw otpError;
+          } else if (access_token && refresh_token) {
+            const { error: sessionError } = await supabase.auth.setSession({
+              access_token,
+              refresh_token,
+            });
+            if (sessionError) throw sessionError;
+          }
+          setRecoverySessionReady(true);
+          setError('');
+          // Remove hash from URL so token is not left in address bar
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        } catch (e: any) {
+          console.error('Recovery session setup failed:', e);
+          setError('This reset link is invalid or expired. Please use Forgot Password again to get a new link.');
+        }
+        return;
+      }
+
+      // Client may have already parsed the hash; check session after a short delay
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        setRecoverySessionReady(true);
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    };
+
+    establishRecoverySession();
+  }, [initialMode]);
 
   const loginWithGoogle = async () => {
     setLoading(true);
