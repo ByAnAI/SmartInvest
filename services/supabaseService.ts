@@ -73,14 +73,20 @@ function rowToUserMetadata(row: any): UserMetadata {
 }
 
 export const getAllUsers = async (): Promise<UserMetadata[]> => {
-    const { data, error } = await supabase
-        .from('profiles')
-        .select('*');
-    if (error) {
-        console.error('getAllUsers:', error);
-        throw error;
+    const { data, error } = await supabase.rpc('get_all_profiles_for_admin');
+    if (!error && data != null) {
+        return (Array.isArray(data) ? data : []).map(rowToUserMetadata);
     }
-    return (data || []).map(rowToUserMetadata);
+    if (error?.code === '42883' || error?.message?.includes('does not exist')) {
+        const { data: tableData, error: tableError } = await supabase.from('profiles').select('*');
+        if (tableError) {
+            console.error('getAllUsers:', tableError);
+            throw tableError;
+        }
+        return (tableData || []).map(rowToUserMetadata);
+    }
+    console.error('getAllUsers:', error);
+    throw error;
 };
 
 export const updateUserStatus = async (uid: string, status: 'active' | 'disabled') => {

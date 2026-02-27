@@ -1,14 +1,8 @@
--- Run this in Supabase SQL Editor (Dashboard → SQL Editor).
--- Creates the profiles table so the app can store user metadata and the admin panel can list users.
+-- Run this ENTIRE script in Supabase SQL Editor (Dashboard → SQL Editor).
+-- Creates the profiles table and an RPC so admins always see all users in the admin panel.
 --
--- If you see NO USERS in the admin panel, it's usually because:
--- 1. The profiles table doesn't exist yet → run this entire script.
--- 2. RLS is blocking reads: only "read own profile" exists, so you only see yourself. Add the
---    "Admins can read all profiles" policy (see section 4 below).
--- 3. No rows in profiles: sign in once so initializeUser creates your profile; the trigger
---    below will also create profiles for new sign-ups.
---
--- If the table already exists with different column names, you may only need to add the RLS policies.
+-- If you still see NO USERS: run this full script (including section 9). Section 9 adds
+-- get_all_profiles_for_admin() so the app can list all users for admins regardless of RLS.
 
 -- 1) Create profiles table (matches app: uid, email, displayName, status, role, etc.)
 create table if not exists public.profiles (
@@ -92,3 +86,21 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- 9) RPC so admins always get the full user list (bypasses RLS for this read)
+create or replace function public.get_all_profiles_for_admin()
+returns setof public.profiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (select 1 from public.profiles where uid = auth.uid() and role = 'admin') then
+    return;
+  end if;
+  return query select * from public.profiles;
+end;
+$$;
+
+grant execute on function public.get_all_profiles_for_admin() to authenticated;
+grant execute on function public.get_all_profiles_for_admin() to service_role;
