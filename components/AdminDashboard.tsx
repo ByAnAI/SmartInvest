@@ -1,7 +1,20 @@
 
 import React, { useState, useEffect } from 'react';
-import { getAllUsers, initializeUser, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData, createOrUpdateDailyWatchlist, getDailyWatchlist } from '../services/supabaseService';
-import { UserMetadata } from '../types';
+import {
+  getAllUsers,
+  initializeUser,
+  updateUserStatus,
+  updateUserRole,
+  deleteUserFully,
+  batchUploadMarketData,
+  createOrUpdateDailyWatchlist,
+  getDailyWatchlist,
+  getCompanyFundamentals,
+  upsertCompanyFundamentals,
+  updateCompanyFundamental,
+  deleteCompanyFundamental,
+} from '../services/supabaseService';
+import { UserMetadata, CompanyFundamental } from '../types';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
 
@@ -23,6 +36,23 @@ const AdminDashboard: React.FC = () => {
   const [dailyWatchlistSymbols, setDailyWatchlistSymbols] = useState('');
   const [todayWatchlist, setTodayWatchlist] = useState<string[]>([]);
 
+  // Company fundamentals (admin-only)
+  const [companyFundamentals, setCompanyFundamentals] = useState<CompanyFundamental[]>([]);
+  const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
+  const [fundamentalsSearch, setFundamentalsSearch] = useState('');
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [uploadingCsv, setUploadingCsv] = useState(false);
+  const [editFundamental, setEditFundamental] = useState<CompanyFundamental | null>(null);
+  const [showFundamentalModal, setShowFundamentalModal] = useState(false);
+  const [fundamentalForm, setFundamentalForm] = useState<CompanyFundamental>({
+    ticker: '',
+    company: '',
+    sector: '',
+    location: '',
+    industry: '',
+    website: '',
+  });
+
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       setCurrentUser(data.user);
@@ -34,6 +64,26 @@ const AdminDashboard: React.FC = () => {
       if (w) setTodayWatchlist(w.symbols);
     });
   }, [creatingWatchlist]);
+
+  const fetchCompanyFundamentals = async () => {
+    setFundamentalsLoading(true);
+    try {
+      const data = await getCompanyFundamentals({
+        limit: 500,
+        search: fundamentalsSearch || undefined,
+      });
+      setCompanyFundamentals(data);
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to load company fundamentals.');
+    } finally {
+      setFundamentalsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser) return;
+    fetchCompanyFundamentals();
+  }, [currentUser]);
 
   const fetchUsers = async (forceRefresh = false) => {
     if (forceRefresh) setIsSyncing(true);
@@ -203,6 +253,109 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  // --- Company fundamentals (admin-only) ---
+  function parseCsvLine(line: string): string[] {
+    const out: string[] = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        inQuotes = !inQuotes;
+        continue;
+      }
+      if (!inQuotes && c === ',') {
+        out.push(cur.trim());
+        cur = '';
+        continue;
+      }
+      cur += c;
+    }
+    out.push(cur.trim());
+    return out;
+  }
+
+  const handleUploadCsv = async () => {
+    if (!csvFile) return;
+    setUploadingCsv(true);
+    setError(null);
+    try {
+      const text = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result));
+        r.onerror = rej;
+        r.readAsText(csvFile);
+      });
+      const lines = text.split(/\r?\n/).filter((l) => l.trim());
+      if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row.');
+      const header = parseCsvLine(lines[0]);
+      const rows = lines.slice(1).map((line) => {
+        const values = parseCsvLine(line);
+        const row: Record<string, string> = {};
+        header.forEach((h, i) => {
+          row[h] = values[i] ?? '';
+        });
+        return row;
+      });
+      const records: CompanyFundamental[] = rows.map((r) => ({
+        ticker: (r.Ticker || '').trim(),
+        company: (r.Company || '').trim(),
+        sector: (r.Sector || '').trim(),
+        location: (r.Location || '').trim(),
+        industry: (r.Industry || '').trim(),
+        website: (r.Website || '').trim(),
+      })).filter((r) => r.ticker);
+      await upsertCompanyFundamentals(records);
+      setCsvFile(null);
+      const fileInput = document.getElementById('csv-fundamentals-upload') as HTMLInputElement;
+      if (fileInput) fileInput.value = '';
+      showFeedback(`Uploaded ${records.length} company fundamentals.`);
+      fetchCompanyFundamentals();
+    } catch (err: any) {
+      setError(err?.message ?? 'CSV upload failed.');
+    } finally {
+      setUploadingCsv(false);
+    }
+  };
+
+  const handleSaveFundamental = async () => {
+    const { ticker, company, sector, location, industry, website } = fundamentalForm;
+    if (!ticker.trim()) {
+      setError('Ticker is required.');
+      return;
+    }
+    setError(null);
+    try {
+      if (editFundamental) {
+        await updateCompanyFundamental(editFundamental.ticker, { company, sector, location, industry, website });
+        showFeedback('Company fundamental updated.');
+      } else {
+        await upsertCompanyFundamentals([{ ticker: ticker.trim(), company, sector, location, industry, website }]);
+        showFeedback('Company fundamental added.');
+      }
+      setEditFundamental(null);
+      setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
+      fetchCompanyFundamentals();
+    } catch (err: any) {
+      setError(err?.message ?? 'Save failed.');
+    }
+  };
+
+  const handleDeleteFundamental = async (ticker: string) => {
+    if (!window.confirm(`Delete company fundamental "${ticker}"?`)) return;
+    try {
+      await deleteCompanyFundamental(ticker);
+      showFeedback('Company fundamental deleted.');
+      if (editFundamental?.ticker === ticker) {
+        setEditFundamental(null);
+        setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
+      }
+      fetchCompanyFundamentals();
+    } catch (err: any) {
+      setError(err?.message ?? 'Delete failed.');
+    }
+  };
+
   const handleWipeRegistry = async () => {
     const uidsToPurge = users.filter(u => u.uid !== currentUser?.id).map(u => u.uid);
     if (uidsToPurge.length === 0) return alert("Registry is already clean (excluding your master account).");
@@ -350,6 +503,233 @@ const AdminDashboard: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Company fundamentals (admin-only): upload CSV or edit rows */}
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
+        <div className="flex flex-wrap justify-between items-center gap-4 mb-6">
+          <div>
+            <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Company fundamentals</h3>
+            <p className="text-xs text-slate-400 font-bold mt-1">Reference data. Only admins can upload CSV or edit rows. All users can read.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="text"
+              placeholder="Search ticker, company, sector..."
+              value={fundamentalsSearch}
+              onChange={(e) => setFundamentalsSearch(e.target.value)}
+              className="px-4 py-2 border border-slate-200 rounded-xl text-sm font-medium text-slate-700 placeholder-slate-400 w-48 focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setEditFundamental(null);
+                setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
+              }}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-indigo-700"
+            >
+              Add row
+            </button>
+            <button
+              type="button"
+              onClick={fetchCompanyFundamentals}
+              disabled={fundamentalsLoading}
+              className="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200 disabled:opacity-50"
+            >
+              {fundamentalsLoading ? 'Loading...' : 'Refresh'}
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end mb-6">
+          <div className="md:col-span-2">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Upload CSV (Ticker, Company, Sector, Location, Industry, Website)</label>
+            <input
+              id="csv-fundamentals-upload"
+              type="file"
+              accept=".csv"
+              onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)}
+              className="mt-1 w-full text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-black file:uppercase file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 text-slate-500"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={handleUploadCsv}
+            disabled={uploadingCsv || !csvFile}
+            className="py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {uploadingCsv ? 'Uploading...' : 'Upload & replace'}
+          </button>
+        </div>
+        <div className="overflow-x-auto border border-slate-100 rounded-2xl">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 bg-slate-50/50">
+                <th className="px-4 py-3">Ticker</th>
+                <th className="px-4 py-3">Company</th>
+                <th className="px-4 py-3">Sector</th>
+                <th className="px-4 py-3">Location</th>
+                <th className="px-4 py-3">Industry</th>
+                <th className="px-4 py-3">Website</th>
+                <th className="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {fundamentalsLoading ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500">Loading...</td>
+                </tr>
+              ) : (
+                (() => {
+                  const search = fundamentalsSearch.trim().toLowerCase();
+                  const filtered = search
+                    ? companyFundamentals.filter(
+                        (r) =>
+                          r.ticker.toLowerCase().includes(search) ||
+                          r.company.toLowerCase().includes(search) ||
+                          r.sector.toLowerCase().includes(search) ||
+                          r.industry.toLowerCase().includes(search)
+                      )
+                    : companyFundamentals;
+                  return filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-slate-500">No company fundamentals. Upload a CSV or add rows.</td>
+                    </tr>
+                  ) : (
+                    filtered.map((r) => (
+                      <tr key={r.ticker} className="hover:bg-slate-50/50">
+                        <td className="px-4 py-3 font-mono font-bold text-slate-800">{r.ticker}</td>
+                        <td className="px-4 py-3 text-slate-700">{r.company}</td>
+                        <td className="px-4 py-3 text-slate-600">{r.sector}</td>
+                        <td className="px-4 py-3 text-slate-600 max-w-[180px] truncate" title={r.location}>{r.location}</td>
+                        <td className="px-4 py-3 text-slate-600 max-w-[160px] truncate" title={r.industry}>{r.industry}</td>
+                        <td className="px-4 py-3">
+                          <a href={r.website} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline text-xs truncate block max-w-[120px]">
+                            {r.website || '—'}
+                          </a>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditFundamental(r);
+                              setFundamentalForm({ ...r });
+                            }}
+                            className="text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded text-xs font-bold mr-1"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteFundamental(r.ticker)}
+                            className="text-rose-600 hover:bg-rose-50 px-2 py-1 rounded text-xs font-bold"
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  );
+                })()
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Modal: Add/Edit company fundamental */}
+      {(editFundamental !== null || fundamentalForm.ticker !== '' || fundamentalForm.company !== '') && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => {
+          setEditFundamental(null);
+          setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
+        }}>
+          <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-black text-slate-900 uppercase tracking-widest text-xs">
+              {editFundamental ? 'Edit company fundamental' : 'Add company fundamental'}
+            </h3>
+            <div className="grid grid-cols-1 gap-3">
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Ticker</label>
+                <input
+                  type="text"
+                  value={fundamentalForm.ticker}
+                  onChange={(e) => setFundamentalForm((f) => ({ ...f, ticker: e.target.value.toUpperCase() }))}
+                  disabled={!!editFundamental}
+                  placeholder="e.g. AAPL"
+                  className="w-full px-4 py-2 border border-slate-200 rounded-xl font-mono font-bold disabled:bg-slate-100"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Company</label>
+                <input
+                  type="text"
+                  value={fundamentalForm.company}
+                  onChange={(e) => setFundamentalForm((f) => ({ ...f, company: e.target.value }))}
+                  placeholder="Company name"
+                  className="w-full px-4 py-2 border border-slate-200 rounded-xl"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Sector</label>
+                <input
+                  type="text"
+                  value={fundamentalForm.sector}
+                  onChange={(e) => setFundamentalForm((f) => ({ ...f, sector: e.target.value }))}
+                  placeholder="e.g. Technology"
+                  className="w-full px-4 py-2 border border-slate-200 rounded-xl"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Location</label>
+                <input
+                  type="text"
+                  value={fundamentalForm.location}
+                  onChange={(e) => setFundamentalForm((f) => ({ ...f, location: e.target.value }))}
+                  placeholder="City, State, Country"
+                  className="w-full px-4 py-2 border border-slate-200 rounded-xl"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Industry</label>
+                <input
+                  type="text"
+                  value={fundamentalForm.industry}
+                  onChange={(e) => setFundamentalForm((f) => ({ ...f, industry: e.target.value }))}
+                  placeholder="e.g. Software - Application"
+                  className="w-full px-4 py-2 border border-slate-200 rounded-xl"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Website</label>
+                <input
+                  type="url"
+                  value={fundamentalForm.website}
+                  onChange={(e) => setFundamentalForm((f) => ({ ...f, website: e.target.value }))}
+                  placeholder="https://..."
+                  className="w-full px-4 py-2 border border-slate-200 rounded-xl"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={handleSaveFundamental}
+                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditFundamental(null);
+                  setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
+                }}
+                className="px-4 py-3 bg-slate-100 text-slate-700 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-200"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!error && (
         <>

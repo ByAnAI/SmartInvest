@@ -87,3 +87,14 @@ export interface DailyWatchlist {
   created_by: string;
   created_at: string;
 }
+
+// Company fundamentals (reference data; only admins can write)
+export interface CompanyFundamental {
+  ticker: string;
+  company: string;
+  sector: string;
+  location: string;
+  industry: string;
+  website: string;
+  updated_at?: string;
+}

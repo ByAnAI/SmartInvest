@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset, DailyWatchlist } from "../types";
+import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset, DailyWatchlist, CompanyFundamental } from "../types";
 
 // --- USER MANAGEMENT ---
 
@@ -314,5 +314,72 @@ export const createOrUpdateDailyWatchlist = async (createdByUid: string, symbols
             { onConflict: 'watchlist_date' }
         );
 
+    if (error) throw error;
+};
+
+// --- COMPANY FUNDAMENTALS (reference data; admin-only write) ---
+
+export const getCompanyFundamentals = async (opts?: { limit?: number; offset?: number; search?: string }): Promise<CompanyFundamental[]> => {
+    let q = supabase.from('company_fundamentals').select('ticker, company, sector, location, industry, website, updated_at').order('ticker');
+    if (opts?.search?.trim()) {
+        const s = opts.search.trim().replace(/"/g, '');
+        q = q.or(`ticker.ilike."%${s}%",company.ilike."%${s}%",sector.ilike."%${s}%",industry.ilike."%${s}%"`);
+    }
+    if (opts?.limit != null) q = q.limit(opts.limit);
+    if (opts?.offset != null) q = q.range(opts.offset, opts.offset + (opts.limit ?? 50) - 1);
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data ?? []).map((r: any) => ({
+        ticker: r.ticker,
+        company: r.company ?? '',
+        sector: r.sector ?? '',
+        location: r.location ?? '',
+        industry: r.industry ?? '',
+        website: r.website ?? '',
+        updated_at: r.updated_at,
+    }));
+};
+
+export const getCompanyFundamentalByTicker = async (ticker: string): Promise<CompanyFundamental | null> => {
+    const { data, error } = await supabase.from('company_fundamentals').select('*').eq('ticker', ticker.trim().toUpperCase()).single();
+    if (error || !data) return null;
+    return {
+        ticker: data.ticker,
+        company: data.company ?? '',
+        sector: data.sector ?? '',
+        location: data.location ?? '',
+        industry: data.industry ?? '',
+        website: data.website ?? '',
+        updated_at: data.updated_at,
+    };
+};
+
+export const upsertCompanyFundamentals = async (rows: CompanyFundamental[]): Promise<void> => {
+    const payload = rows.map((r) => ({
+        ticker: r.ticker.trim().toUpperCase(),
+        company: (r.company ?? '').trim(),
+        sector: (r.sector ?? '').trim(),
+        location: (r.location ?? '').trim(),
+        industry: (r.industry ?? '').trim(),
+        website: (r.website ?? '').trim(),
+    })).filter((r) => r.ticker);
+    if (payload.length === 0) return;
+    const { error } = await supabase.from('company_fundamentals').upsert(payload, { onConflict: 'ticker' });
+    if (error) throw error;
+};
+
+export const updateCompanyFundamental = async (ticker: string, updates: Partial<Omit<CompanyFundamental, 'ticker'>>): Promise<void> => {
+    const body: Record<string, string> = {};
+    if (updates.company !== undefined) body.company = updates.company.trim();
+    if (updates.sector !== undefined) body.sector = updates.sector.trim();
+    if (updates.location !== undefined) body.location = updates.location.trim();
+    if (updates.industry !== undefined) body.industry = updates.industry.trim();
+    if (updates.website !== undefined) body.website = updates.website.trim();
+    const { error } = await supabase.from('company_fundamentals').update(body).eq('ticker', ticker.trim().toUpperCase());
+    if (error) throw error;
+};
+
+export const deleteCompanyFundamental = async (ticker: string): Promise<void> => {
+    const { error } = await supabase.from('company_fundamentals').delete().eq('ticker', ticker.trim().toUpperCase());
     if (error) throw error;
 };
