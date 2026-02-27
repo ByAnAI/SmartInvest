@@ -39,6 +39,7 @@ const AdminDashboard: React.FC = () => {
   // Company fundamentals (admin-only)
   const [companyFundamentals, setCompanyFundamentals] = useState<CompanyFundamental[]>([]);
   const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
+  const [companyFundamentalsTableMissing, setCompanyFundamentalsTableMissing] = useState(false);
   const [fundamentalsSearch, setFundamentalsSearch] = useState('');
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [uploadingCsv, setUploadingCsv] = useState(false);
@@ -67,6 +68,7 @@ const AdminDashboard: React.FC = () => {
 
   const fetchCompanyFundamentals = async () => {
     setFundamentalsLoading(true);
+    setCompanyFundamentalsTableMissing(false);
     try {
       const data = await getCompanyFundamentals({
         limit: 500,
@@ -74,7 +76,13 @@ const AdminDashboard: React.FC = () => {
       });
       setCompanyFundamentals(data);
     } catch (e: any) {
-      setError(e?.message ?? 'Failed to load company fundamentals.');
+      const msg = e?.message ?? '';
+      if (/schema cache|could not find the table|relation.*does not exist|company_fundamentals/i.test(msg)) {
+        setCompanyFundamentalsTableMissing(true);
+        setCompanyFundamentals([]);
+      } else {
+        setError(msg || 'Failed to load company fundamentals.');
+      }
     } finally {
       setFundamentalsLoading(false);
     }
@@ -333,6 +341,7 @@ const AdminDashboard: React.FC = () => {
         await upsertCompanyFundamentals([{ ticker: ticker.trim(), company, sector, location, industry, website }]);
         showFeedback('Company fundamental added.');
       }
+      setShowFundamentalModal(false);
       setEditFundamental(null);
       setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
       fetchCompanyFundamentals();
@@ -347,6 +356,7 @@ const AdminDashboard: React.FC = () => {
       await deleteCompanyFundamental(ticker);
       showFeedback('Company fundamental deleted.');
       if (editFundamental?.ticker === ticker) {
+        setShowFundamentalModal(false);
         setEditFundamental(null);
         setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
       }
@@ -506,6 +516,14 @@ const AdminDashboard: React.FC = () => {
 
       {/* Company fundamentals (admin-only): upload CSV or edit rows */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
+        {companyFundamentalsTableMissing && (
+          <div className="mb-6 p-6 rounded-2xl bg-amber-50 border border-amber-200">
+            <p className="font-bold text-amber-900 text-sm">Company fundamentals table not found.</p>
+            <p className="text-amber-800 text-xs mt-2">
+              Create it by running <code className="bg-amber-100 px-1.5 py-0.5 rounded font-mono text-[11px]">supabase-company-fundamentals.sql</code> in your Supabase Dashboard → SQL Editor (run the entire script). Then click Refresh below.
+            </p>
+          </div>
+        )}
         <div className="flex flex-wrap justify-between items-center gap-4 mb-6">
           <div>
             <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Company fundamentals</h3>
@@ -524,6 +542,7 @@ const AdminDashboard: React.FC = () => {
               onClick={() => {
                 setEditFundamental(null);
                 setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
+                setShowFundamentalModal(true);
               }}
               className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-indigo-700"
             >
@@ -612,6 +631,7 @@ const AdminDashboard: React.FC = () => {
                             onClick={() => {
                               setEditFundamental(r);
                               setFundamentalForm({ ...r });
+                              setShowFundamentalModal(true);
                             }}
                             className="text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded text-xs font-bold mr-1"
                           >
@@ -636,8 +656,9 @@ const AdminDashboard: React.FC = () => {
       </div>
 
       {/* Modal: Add/Edit company fundamental */}
-      {(editFundamental !== null || fundamentalForm.ticker !== '' || fundamentalForm.company !== '') && (
+      {showFundamentalModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => {
+          setShowFundamentalModal(false);
           setEditFundamental(null);
           setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
         }}>
@@ -719,6 +740,7 @@ const AdminDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
+                  setShowFundamentalModal(false);
                   setEditFundamental(null);
                   setFundamentalForm({ ticker: '', company: '', sector: '', location: '', industry: '', website: '' });
                 }}

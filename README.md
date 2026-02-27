@@ -1,57 +1,177 @@
-# SmartInvest AI - Intelligent Wealth Management
+# Supabase CLI
 
-SmartInvest AI is a state-of-the-art, AI-powered stock market intelligence dashboard. It combines real-time data analysis, generative AI insights, and a premium financial user interface to empower investors with institutional-grade intelligence.
+[![Coverage Status](https://coveralls.io/repos/github/supabase/cli/badge.svg?branch=main)](https://coveralls.io/github/supabase/cli?branch=main) [![Bitbucket Pipelines](https://img.shields.io/bitbucket/pipelines/supabase-cli/setup-cli/master?style=flat-square&label=Bitbucket%20Canary)](https://bitbucket.org/supabase-cli/setup-cli/pipelines) [![Gitlab Pipeline Status](https://img.shields.io/gitlab/pipeline-status/sweatybridge%2Fsetup-cli?label=Gitlab%20Canary)
+](https://gitlab.com/sweatybridge/setup-cli/-/pipelines)
 
-## 🚀 Key Features
+[Supabase](https://supabase.io) is an open source Firebase alternative. We're building the features of Firebase using enterprise-grade open source tools.
 
-- **AI-Driven Stock Analysis**: Uses Gemini 3 Flash to provide sentiment analysis, risk assessment, and technical summaries for any ticker symbol.
-- **Real-Time Market Grounding**: Leverages Google Search integration to fetch and summarize the latest global financial news.
-- **Portfolio Tracking**: Interactive dashboard for managing assets with high-fidelity charts.
-- **Secure Authentication**: Robust session management via Firebase, featuring Google Sign-In and mandatory email verification for security.
-- **Premium UI/UX**: Designed with a focus on aesthetics and responsiveness using Tailwind CSS and Recharts.
+This repository contains all the functionality for Supabase CLI.
 
-## 🛠️ Technology Stack
+- [x] Running Supabase locally
+- [x] Managing database migrations
+- [x] Creating and deploying Supabase Functions
+- [x] Generating types directly from your database schema
+- [x] Making authenticated HTTP requests to [Management API](https://supabase.com/docs/reference/api/introduction)
 
-- **Framework**: React 19 (ES6 Modules)
-- **Styling**: Tailwind CSS
-- **Artificial Intelligence**: Google Gemini API (@google/genai)
-- **Backend Services**: Firebase 11.3 (Auth & App)
-- **Data Visualization**: Recharts
-- **Fonts**: Google Fonts (Inter)
+## Getting started
 
-## 📦 Setup & Installation
+### Install the CLI
 
-1. **Prerequisites**:
-   - A modern web browser with support for ESM and Import Maps.
-   - A Google Gemini API Key.
+Available via [NPM](https://www.npmjs.com) as dev dependency. To install:
 
-2. **Configuration**:
-   - Ensure the `process.env.API_KEY` is accessible in your environment.
-   - The Firebase configuration is hardcoded for the current project scope but can be updated in `services/firebase.ts`.
+```bash
+npm i supabase --save-dev
+```
 
-3. **Usage**:
-   - Simply open `index.html` to launch the application.
+When installing with yarn 4, you need to disable experimental fetch with the following nodejs config.
 
-## 🧪 Local testing (no deployed services)
+```
+NODE_OPTIONS=--no-experimental-fetch yarn add supabase
+```
 
-To run everything locally and avoid hitting deployed Supabase or Firebase:
+> **Note**
+For Bun versions below v1.0.17, you must add `supabase` as a [trusted dependency](https://bun.sh/guides/install/trusted) before running `bun add -D supabase`.
 
-1. Copy the env template: `cp env.local.example .env.local`
-2. Set `VITE_LOCAL_TESTING=true` and add your **local** Supabase URL and anon key (from `supabase start`).
-3. Run the app with local mode: `npm run dev:local` (or `npm run dev` with `.env.local` present).
+<details>
+  <summary><b>macOS</b></summary>
 
-When `VITE_LOCAL_TESTING` is true:
+  Available via [Homebrew](https://brew.sh). To install:
 
-- **Supabase**: Only `VITE_SUPABASE_LOCAL_URL` and `VITE_SUPABASE_LOCAL_ANON_KEY` are used; the deployed project is never called.
-- **Firebase**: Auth and Firestore use emulators if `VITE_FIREBASE_AUTH_EMULATOR` (and optional Firestore vars) are set; start them with `firebase emulators:start --only auth,firestore`.
+  ```sh
+  brew install supabase/tap/supabase
+  ```
 
-Use `.env.local` for local/testing; it is gitignored and overrides `.env`.
+  To install the beta release channel:
+  
+  ```sh
+  brew install supabase/tap/supabase-beta
+  brew link --overwrite supabase-beta
+  ```
+  
+  To upgrade:
 
-## 🛡️ Security
+  ```sh
+  brew upgrade supabase
+  ```
+</details>
 
-- All authentication flows are handled via Firebase.
-- Unverified emails are restricted from accessing the main dashboard to maintain a high-quality user base.
-- Built with standard-compliant ESM for secure script loading.
+<details>
+  <summary><b>Windows</b></summary>
 
----
-Built with ❤️ by [ByAnAI](https://github.com/ByAnAI)
+  Available via [Scoop](https://scoop.sh). To install:
+
+  ```powershell
+  scoop bucket add supabase https://github.com/supabase/scoop-bucket.git
+  scoop install supabase
+  ```
+
+  To upgrade:
+
+  ```powershell
+  scoop update supabase
+  ```
+</details>
+
+<details>
+  <summary><b>Linux</b></summary>
+
+  Available via [Homebrew](https://brew.sh) and Linux packages.
+
+  #### via Homebrew
+
+  To install:
+
+  ```sh
+  brew install supabase/tap/supabase
+  ```
+
+  To upgrade:
+
+  ```sh
+  brew upgrade supabase
+  ```
+
+  #### via Linux packages
+
+  Linux packages are provided in [Releases](https://github.com/supabase/cli/releases). To install, download the `.apk`/`.deb`/`.rpm`/`.pkg.tar.zst` file depending on your package manager and run the respective commands.
+
+  ```sh
+  sudo apk add --allow-untrusted <...>.apk
+  ```
+
+  ```sh
+  sudo dpkg -i <...>.deb
+  ```
+
+  ```sh
+  sudo rpm -i <...>.rpm
+  ```
+
+  ```sh
+  sudo pacman -U <...>.pkg.tar.zst
+  ```
+</details>
+
+<details>
+  <summary><b>Other Platforms</b></summary>
+
+  You can also install the CLI via [go modules](https://go.dev/ref/mod#go-install) without the help of package managers.
+
+  ```sh
+  go install github.com/supabase/cli@latest
+  ```
+
+  Add a symlink to the binary in `$PATH` for easier access:
+
+  ```sh
+  ln -s "$(go env GOPATH)/bin/cli" /usr/bin/supabase
+  ```
+
+  This works on other non-standard Linux distros.
+</details>
+
+<details>
+  <summary><b>Community Maintained Packages</b></summary>
+
+  Available via [pkgx](https://pkgx.sh/). Package script [here](https://github.com/pkgxdev/pantry/blob/main/projects/supabase.com/cli/package.yml).
+  To install in your working directory:
+
+  ```bash
+  pkgx install supabase
+  ```
+
+  Available via [Nixpkgs](https://nixos.org/). Package script [here](https://github.com/NixOS/nixpkgs/blob/master/pkgs/development/tools/supabase-cli/default.nix).
+</details>
+
+### Run the CLI
+
+```bash
+supabase bootstrap
+```
+
+Or using npx:
+
+```bash
+npx supabase bootstrap
+```
+
+The bootstrap command will guide you through the process of setting up a Supabase project using one of the [starter](https://github.com/supabase-community/supabase-samples/blob/main/samples.json) templates.
+
+## Docs
+
+Command & config reference can be found [here](https://supabase.com/docs/reference/cli/about).
+
+## Breaking changes
+
+We follow semantic versioning for changes that directly impact CLI commands, flags, and configurations.
+
+However, due to dependencies on other service images, we cannot guarantee that schema migrations, seed.sql, and generated types will always work for the same CLI major version. If you need such guarantees, we encourage you to pin a specific version of CLI in package.json.
+
+## Developing
+
+To run from source:
+
+```sh
+# Go >= 1.22
+go run . help
+```
