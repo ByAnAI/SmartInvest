@@ -93,8 +93,9 @@ export const updateUserRole = async (uid: string, role: 'user' | 'admin') => {
 };
 
 /**
- * Admin-only: delete a user from Auth (and profile via CASCADE) using the deployed delete-user Edge Function.
- * The Supabase client sends the current session JWT so the function can verify the caller is admin.
+ * Admin-only: permanently delete a user from Auth (and profile via CASCADE) using the delete-user Edge Function.
+ * The user is removed from the users table and must sign up again. Does not fall back to profile-only delete
+ * when the function fails, so the user is never left in Auth with a missing profile.
  */
 export const deleteUserFully = async (uid: string) => {
     const { data, error: fnError } = await supabase.functions.invoke('delete-user', { body: { uid } });
@@ -107,9 +108,9 @@ export const deleteUserFully = async (uid: string) => {
         return { success: true };
     }
     if (status === 401 || status === 403) throw new Error(msg || 'Not authorized to delete users.');
-    const { error } = await supabase.from('profiles').delete().eq('uid', uid);
-    if (error) throw error;
-    return { success: true };
+    throw new Error(
+        msg || 'User could not be permanently deleted. Ensure the delete-user Edge Function is deployed and SUPABASE_SERVICE_ROLE_KEY is set, then try again.'
+    );
 };
 
 // --- PORTFOLIO MANAGEMENT ---

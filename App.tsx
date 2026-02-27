@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './services/supabase';
-import { initializeUser } from './services/supabaseService';
+import { initializeUser, getUserMetadata } from './services/supabaseService';
 import Layout from './components/Layout';
 import Dashboard from './components/Dashboard';
 import AIAnalysis from './components/AIAnalysis';
@@ -23,10 +23,18 @@ const App: React.FC = () => {
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'reset-password' | 'verify-email'>('login');
   const [authActionCode, setAuthActionCode] = useState<string | null>(null);
+  const [accountSuspended, setAccountSuspended] = useState(false);
+
+  const signOutSuspended = useCallback(() => {
+    setAccountSuspended(true);
+    supabase.auth.signOut();
+    setUser(null);
+    setUserMetadata(null);
+  }, []);
 
   /**
    * Auth: resolve session quickly so UI shows, then load profile in background.
-   * Timeout so we never stay stuck on "Initializing" if Supabase is slow or unreachable.
+   * Suspended users are signed out and cannot use the app until an admin activates them.
    */
   useEffect(() => {
     setLoading(true);
@@ -35,22 +43,20 @@ const App: React.FC = () => {
       const currentUser = session?.user ?? null;
       setUser(currentUser);
       setLoading(false);
+      if (currentUser) setAccountSuspended(false);
 
       if (!currentUser) {
         setUserMetadata(null);
         return;
       }
 
-      // Load profile in background so we don't block initial paint
       initializeUser(
         currentUser.id,
         currentUser.email,
         currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0]
       ).then((metadata) => {
         if (metadata.status === 'disabled') {
-          supabase.auth.signOut();
-          setUser(null);
-          setUserMetadata(null);
+          signOutSuspended();
         } else {
           setUserMetadata(metadata);
         }
@@ -87,7 +93,17 @@ const App: React.FC = () => {
       clearTimeout(timeout);
       subscription.unsubscribe();
     };
-  }, []);
+  }, [signOutSuspended]);
+
+  // While logged in, re-check profile periodically so if admin suspends the user they are signed out
+  useEffect(() => {
+    if (!user?.id) return;
+    const interval = setInterval(async () => {
+      const meta = await getUserMetadata(user.id);
+      if (meta?.status === 'disabled') signOutSuspended();
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [user?.id, signOutSuspended]);
 
   // Allow child components to change tabs via a custom event
   useEffect(() => {
@@ -152,12 +168,25 @@ const App: React.FC = () => {
   if (!user) {
     return (
       <>
+        {accountSuspended && (
+          <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500/95 text-amber-950 px-4 py-3 flex items-center justify-between gap-4 shadow-lg">
+            <p className="font-semibold text-sm">
+              Your account is suspended. You cannot log in or use the app until an administrator reactivates your account.
+            </p>
+            <button
+              type="button"
+              onClick={() => setAccountSuspended(false)}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-900/20 hover:bg-amber-900/30 font-medium text-xs uppercase tracking-wide"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <LandingPage onAuth={handleAuthOpen} />
         {showAuth && (
           <Auth
             onClose={() => {
               setShowAuth(false);
-              // Clean up URL so reset-password link doesn't reopen reset form next time
               const url = new URL(window.location.href);
               url.searchParams.delete('mode');
               if (url.search !== window.location.search || authActionCode) {
