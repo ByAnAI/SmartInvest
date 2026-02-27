@@ -94,23 +94,25 @@ export const updateUserRole = async (uid: string, role: 'user' | 'admin') => {
 
 /**
  * Admin-only: permanently delete a user from Auth (and profile via CASCADE) using the delete-user Edge Function.
- * The user is removed from the users table and must sign up again. Does not fall back to profile-only delete
- * when the function fails, so the user is never left in Auth with a missing profile.
+ * When the function is unreachable, falls back to profile-only delete so the user is removed from the list.
  */
-export const deleteUserFully = async (uid: string) => {
+export const deleteUserFully = async (uid: string): Promise<{ success: true; permanent?: boolean }> => {
     const { data, error: fnError } = await supabase.functions.invoke('delete-user', { body: { uid } });
-    if (!fnError && data?.success) return { success: true };
+    if (!fnError && data?.success) return { success: true, permanent: true };
     const msg = (data?.error ?? fnError?.message ?? '') as string;
     const status = (fnError as { context?: { status?: number } })?.context?.status;
     const isNotFound = status === 404 || msg.toLowerCase().includes('user not found');
     if (isNotFound) {
         await supabase.from('profiles').delete().eq('uid', uid);
-        return { success: true };
+        return { success: true, permanent: true };
     }
     if (status === 401 || status === 403) throw new Error(msg || 'Not authorized to delete users.');
-    throw new Error(
-        msg || 'User could not be permanently deleted. Ensure the delete-user Edge Function is deployed and SUPABASE_SERVICE_ROLE_KEY is set, then try again.'
-    );
+    const isNetworkError = /failed to send a request|fetch failed|network|connection refused|cors/i.test(msg);
+    if (isNetworkError) {
+        await supabase.from('profiles').delete().eq('uid', uid);
+        return { success: true, permanent: false };
+    }
+    throw new Error(msg || 'User could not be permanently deleted. Deploy the delete-user Edge Function and set SUPABASE_SERVICE_ROLE_KEY.');
 };
 
 // --- PORTFOLIO MANAGEMENT ---

@@ -4,17 +4,17 @@
 -- If you still see NO USERS: run this full script (including section 9). Section 9 adds
 -- get_all_profiles_for_admin() so the app can list all users for admins regardless of RLS.
 
--- 1) Create profiles table (matches app: uid, email, displayName, status, role, etc.)
+-- 1) Create profiles table (snake_case - run this if your table has different columns)
 create table if not exists public.profiles (
   uid uuid primary key references auth.users(id) on delete cascade,
   email text not null default '',
-  "displayName" text not null default 'Investor',
+  display_name text not null default 'Investor',
   status text not null default 'active' check (status in ('active', 'disabled')),
   role text not null default 'user' check (role in ('user', 'admin')),
-  "isVerified" boolean not null default false,
-  "lastLogin" timestamptz,
-  "createdAt" timestamptz not null default now(),
-  "updatedAt" timestamptz not null default now(),
+  is_verified boolean not null default false,
+  last_login timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
   watchlist text[] default '{}'
 );
 
@@ -65,7 +65,7 @@ create policy "Admins can delete any profile"
 create or replace function public.handle_new_user()
 returns trigger as $$
 begin
-  insert into public.profiles (uid, email, "displayName", status, role, "isVerified", "lastLogin", "createdAt", "updatedAt")
+  insert into public.profiles (uid, email, display_name, status, role, is_verified, last_login, created_at, updated_at)
   values (
     new.id,
     coalesce(new.email, ''),

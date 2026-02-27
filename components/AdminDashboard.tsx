@@ -166,12 +166,16 @@ const AdminDashboard: React.FC = () => {
 
   const handleDeleteUser = async (uid: string) => {
     if (uid === currentUser?.id) return alert("You cannot delete yourself.");
-    if (!window.confirm("Permanently delete this user? They will no longer appear in the list and cannot sign in with this account's profile data.")) return;
+    if (!window.confirm("Permanently delete this user? They will be removed from the system and must sign up again to use the app. This cannot be undone.")) return;
 
     try {
-      await deleteUserFully(uid);
+      const result = await deleteUserFully(uid);
       setUsers(users.filter(u => u.uid !== uid));
-      showFeedback("User deleted.");
+      showFeedback(
+        result.permanent !== false
+          ? "User deleted. They must sign up again to use the app."
+          : "User removed from list. They can still sign in until the delete-user Edge Function is reachable (check VITE_SUPABASE_URL and deploy the function)."
+      );
     } catch (err: any) {
       setError("Delete failed: " + (err?.message ?? String(err)));
     }
