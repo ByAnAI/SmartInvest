@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { getAllUsers, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData, createOrUpdateDailyWatchlist, getDailyWatchlist } from '../services/supabaseService';
+import { getAllUsers, initializeUser, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData, createOrUpdateDailyWatchlist, getDailyWatchlist } from '../services/supabaseService';
 import { UserMetadata } from '../types';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
@@ -40,7 +40,15 @@ const AdminDashboard: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getAllUsers();
+      let data = await getAllUsers();
+      if (data.length === 0 && currentUser) {
+        await initializeUser(
+          currentUser.id,
+          currentUser.email ?? null,
+          currentUser.user_metadata?.full_name ?? currentUser.email?.split('@')[0] ?? null
+        );
+        data = await getAllUsers();
+      }
       setUsers(data);
     } catch (err: any) {
       console.error("AdminDashboard: Access Error:", err);
@@ -58,8 +66,11 @@ const AdminDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchUsers();
-  }, []);
+    if (currentUser) fetchUsers();
+  }, [currentUser]);
+
+  // Exclude current user from the list so admin only sees other users
+  const otherUsers = users.filter((u) => u.uid !== currentUser?.id);
 
   const showFeedback = (msg: string) => {
     setSuccess(msg);
@@ -162,7 +173,7 @@ const AdminDashboard: React.FC = () => {
       setUsers(users.filter(u => u.uid !== uid));
       showFeedback("User deleted.");
     } catch (err: any) {
-      setError("Delete failed: " + err.message);
+      setError("Delete failed: " + (err?.message ?? String(err)));
     }
   };
 
@@ -340,8 +351,8 @@ const AdminDashboard: React.FC = () => {
         <>
           <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
             <div className="p-6 border-b border-slate-50 bg-slate-50/30">
-              <h3 className="font-bold text-slate-800 uppercase tracking-widest text-xs">All users ({users.length})</h3>
-              <p className="text-slate-500 text-xs mt-1 font-medium">View everyone. Suspend or delete other users (you cannot suspend or delete yourself).</p>
+              <h3 className="font-bold text-slate-800 uppercase tracking-widest text-xs">Other users ({otherUsers.length})</h3>
+              <p className="text-slate-500 text-xs mt-1 font-medium">Manage other users. You are not shown in this list.</p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left">
@@ -354,15 +365,15 @@ const AdminDashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {users.length === 0 ? (
+                  {otherUsers.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="px-8 py-12 text-center text-slate-500 text-sm font-medium">
-                        No users in registry. Use &quot;Sync Registry&quot; or ensure the profiles table and RLS are set up (see supabase-profiles-table.sql).
+                        No other users in registry. Use &quot;Sync Registry&quot; to pull in new sign-ups, or ensure the profiles table and RLS are set up (see supabase-profiles-table.sql).
                       </td>
                     </tr>
                   ) : (
-                    users.map(user => (
-                      <tr key={user.uid} className={`hover:bg-slate-50/50 transition-colors ${user.uid === currentUser?.id ? 'bg-indigo-50/30' : ''}`}>
+                    otherUsers.map(user => (
+                      <tr key={user.uid} className="hover:bg-slate-50/50 transition-colors">
                         <td className="px-8 py-5">
                           <div className="flex items-center space-x-4">
                             <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-sm border-2 ${user.role === 'admin' ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'
@@ -370,12 +381,7 @@ const AdminDashboard: React.FC = () => {
                               {(user.displayName?.[0] || user.email?.[0] || 'U').toUpperCase()}
                             </div>
                             <div>
-                              <div className="flex items-center space-x-2">
-                                <p className="font-bold text-slate-900">{user.displayName || 'Anonymous'}</p>
-                                {user.uid === currentUser?.id && (
-                                  <span className="text-[8px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-tighter">You</span>
-                                )}
-                              </div>
+                              <p className="font-bold text-slate-900">{user.displayName || 'Anonymous'}</p>
                               <p className="text-xs text-slate-400 font-medium">{user.email}</p>
                             </div>
                           </div>
@@ -383,7 +389,6 @@ const AdminDashboard: React.FC = () => {
                         <td className="px-8 py-5">
                           <button
                             onClick={() => handleRoleChange(user.uid, user.role)}
-                            disabled={user.uid === currentUser?.id}
                             className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${user.role === 'admin'
                               ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
                               : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-100'
@@ -395,7 +400,6 @@ const AdminDashboard: React.FC = () => {
                         <td className="px-8 py-5">
                           <button
                             onClick={() => handleToggleStatus(user.uid, user.status)}
-                            disabled={user.uid === currentUser?.id}
                             className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${user.status === 'active'
                               ? 'bg-emerald-50 text-emerald-600 border border-emerald-100 hover:bg-emerald-100'
                               : 'bg-rose-50 text-rose-600 border border-rose-100 hover:bg-rose-100'
@@ -404,18 +408,15 @@ const AdminDashboard: React.FC = () => {
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${user.status === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
                             {user.status === 'active' ? 'Active' : 'Suspended'}
                           </button>
-                          {user.uid !== currentUser?.id && (
-                            <span className="block mt-1 text-[9px] text-slate-400 font-medium">
-                              {user.status === 'active' ? 'Click to suspend' : 'Click to activate'}
-                            </span>
-                          )}
+                          <span className="block mt-1 text-[9px] text-slate-400 font-medium">
+                            {user.status === 'active' ? 'Click to suspend' : 'Click to activate'}
+                          </span>
                         </td>
                         <td className="px-8 py-5 text-right">
                           <button
                             onClick={() => handleDeleteUser(user.uid)}
-                            disabled={user.uid === currentUser?.id}
-                            title={user.uid === currentUser?.id ? 'Cannot delete yourself' : 'Delete this user'}
-                            className="inline-flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold uppercase tracking-wider"
+                            title="Delete this user"
+                            className="inline-flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all text-xs font-bold uppercase tracking-wider"
                           >
                             <span aria-hidden>🗑️</span>
                             <span>Delete</span>
@@ -443,8 +444,8 @@ const AdminDashboard: React.FC = () => {
                 </div>
                 <button
                   onClick={handleWipeRegistry}
-                  disabled={isPurging || users.length <= 1}
-                  className={`px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 shadow-xl ${isPurging || users.length <= 1
+                  disabled={isPurging || otherUsers.length === 0}
+                  className={`px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 shadow-xl ${isPurging || otherUsers.length === 0
                     ? 'bg-rose-200 text-rose-400 cursor-not-allowed'
                     : 'bg-rose-600 text-white hover:bg-rose-700 shadow-rose-900/10'
                     }`}

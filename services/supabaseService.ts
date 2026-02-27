@@ -19,34 +19,18 @@ export const initializeUser = async (uid: string, email?: string | null, display
     const MASTER_ADMIN_EMAIL = "idris.elfeghi@byanai.com";
     const role = (email === MASTER_ADMIN_EMAIL) ? 'admin' : 'user';
 
-    const newUser: UserMetadata = {
-        uid,
-        email: email || '',
-        displayName: displayName || 'Investor',
-        status: 'active',
-        role: role,
-        isVerified: false,
-        lastLogin: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-    };
-
     const { error: insertError } = await supabase
         .from('profiles')
-        .insert(newUser);
+        .insert({ uid, email: email || '', status: 'active', role });
 
-    if (insertError) {
-        console.error("Supabase: initializeUser failure:", insertError);
-    }
-
-    return newUser;
+    if (insertError) throw insertError;
+    return { uid, email: email || '', displayName: displayName || 'Investor', status: 'active' as const, role, isVerified: false, lastLogin: '', createdAt: '', updatedAt: '' };
 };
 
 export const markUserAsVerified = async (uid: string) => {
-    await supabase
-        .from('profiles')
-        .update({ isVerified: true, updatedAt: new Date().toISOString() })
-        .eq('uid', uid);
+    const { error: e1 } = await supabase.from('profiles').update({ is_verified: true, updated_at: new Date().toISOString() }).eq('uid', uid);
+    if (!e1) return;
+    await supabase.from('profiles').update({ isVerified: true, updatedAt: new Date().toISOString() }).eq('uid', uid);
 };
 
 export const getUserMetadata = async (uid: string): Promise<UserMetadata | null> => {
@@ -77,7 +61,12 @@ export const getAllUsers = async (): Promise<UserMetadata[]> => {
     if (!error && data != null) {
         return (Array.isArray(data) ? data : []).map(rowToUserMetadata);
     }
-    if (error?.code === '42883' || error?.message?.includes('does not exist')) {
+    const rpcMissing =
+        error?.code === '42883' ||
+        error?.message?.includes('does not exist') ||
+        error?.message?.includes('Could not find the function') ||
+        error?.message?.includes('schema cache');
+    if (rpcMissing) {
         const { data: tableData, error: tableError } = await supabase.from('profiles').select('*');
         if (tableError) {
             console.error('getAllUsers:', tableError);
@@ -103,15 +92,22 @@ export const updateUserRole = async (uid: string, role: 'user' | 'admin') => {
         .eq('uid', uid);
 };
 
+/**
+ * Admin-only: delete a user from Auth (and profile via CASCADE) using the deployed delete-user Edge Function.
+ * The Supabase client sends the current session JWT so the function can verify the caller is admin.
+ */
 export const deleteUserFully = async (uid: string) => {
-    // Supabase Auth deletion is tricky from the client side without service role key.
-    // Usually done via an Edge Function or RPC if granted enough permission.
-    // For now, we delete from profiles table.
-    const { error } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('uid', uid);
-
+    const { data, error: fnError } = await supabase.functions.invoke('delete-user', { body: { uid } });
+    if (!fnError && data?.success) return { success: true };
+    const msg = (data?.error ?? fnError?.message ?? '') as string;
+    const status = (fnError as { context?: { status?: number } })?.context?.status;
+    const isNotFound = status === 404 || msg.toLowerCase().includes('user not found');
+    if (isNotFound) {
+        await supabase.from('profiles').delete().eq('uid', uid);
+        return { success: true };
+    }
+    if (status === 401 || status === 403) throw new Error(msg || 'Not authorized to delete users.');
+    const { error } = await supabase.from('profiles').delete().eq('uid', uid);
     if (error) throw error;
     return { success: true };
 };
