@@ -13,10 +13,13 @@ interface AuthProps {
 type AuthMode = 'login' | 'signup' | 'forgot-password' | 'reset-password' | 'verify-email';
 
 // Parse hash fragment for Supabase redirect params (e.g. password reset link)
+// Handles both #access_token=... and #/recovery?access_token=... styles
 function getHashParam(name: string): string | null {
   if (typeof window === 'undefined' || !window.location.hash) return null;
-  const match = window.location.hash.match(new RegExp(`[#&]${name}=([^&]*)`));
-  return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : null;
+  const hash = window.location.hash;
+  const re = new RegExp(`[#&?]${name}=([^&]*)`);
+  const match = hash.match(re);
+  return match ? decodeURIComponent(match[1].replace(/\+/g, ' ').trim()) : null;
 }
 
 const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login', actionCode }) => {
@@ -60,8 +63,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       const refresh_token = getHashParam('refresh_token');
       const type = getHashParam('type');
       const token_hash = getHashParam('token_hash');
+      const hasRecoveryTokens = (type === 'recovery' || access_token) && (token_hash || (access_token && refresh_token));
 
-      if (type === 'recovery' && (access_token || token_hash)) {
+      if (hasRecoveryTokens) {
         try {
           if (token_hash) {
             const { error: otpError } = await supabase.auth.verifyOtp({
@@ -78,10 +82,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
           }
           setRecoverySessionReady(true);
           setError('');
-          // Remove hash and ?mode=reset-password from URL so token is not exposed and next open shows login
+          // Remove only the hash (tokens); keep ?mode=reset-password so user stays on reset form
           const url = new URL(window.location.href);
           url.hash = '';
-          url.searchParams.delete('mode');
           window.history.replaceState(null, '', url.pathname + url.search);
         } catch (e: any) {
           console.error('Recovery session setup failed:', e);
@@ -94,9 +97,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
         setRecoverySessionReady(true);
+        setError('');
         const url = new URL(window.location.href);
         url.hash = '';
-        url.searchParams.delete('mode');
         window.history.replaceState(null, '', url.pathname + url.search);
       } else {
         setError('This reset link is invalid or expired. Please use Forgot Password again to get a new link.');
@@ -205,15 +208,17 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setTimeout(() => setMode('login'), 6000);
         setLoading(false);
       } else if (mode === 'reset-password') {
-        if (newPassword !== confirmPassword) throw new Error("Passwords do not match.");
-        if (newPassword.length < 6) throw new Error("Password must be at least 6 characters.");
+        const pwd = (newPassword || '').trim();
+        const conf = (confirmPassword || '').trim();
+        if (pwd !== conf) throw new Error("Passwords do not match.");
+        if (pwd.length < 6) throw new Error("Password must be at least 6 characters.");
 
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) throw new Error("Recovery session expired or invalid. Please use Forgot Password again to get a new link.");
 
         const userEmail = (session.user?.email ?? '').trim().toLowerCase();
         const { error } = await supabase.auth.updateUser({
-          password: newPassword,
+          password: pwd,
         });
         if (error) throw error;
 
@@ -226,6 +231,9 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setPassword('');
         setSuccessMsg("Password updated. Log in with your new password.");
         setMode('login');
+        const url = new URL(window.location.href);
+        url.searchParams.delete('mode');
+        window.history.replaceState(null, '', url.pathname + url.search);
         setLoading(false);
       }
     } catch (err: any) {
@@ -240,6 +248,8 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setError("Email rate limit exceeded. Wait an hour or add custom SMTP in Supabase (Project Settings → Auth → SMTP).");
       } else if (msg.includes("recovery email") || msg.includes("error sending")) {
         setError("Recovery email could not be sent. In Supabase Dashboard: 1) Project Settings → Auth → SMTP — enable custom SMTP (SendGrid, Resend, etc.). 2) Authentication → URL Configuration — add this redirect URL: " + `${window.location.origin}/?mode=reset-password`);
+      } else if (mode === 'reset-password' && (msg.includes("password") || msg.includes("update") || msg.includes("session"))) {
+        setError(err?.message || "Could not save new password. Use at least 6 characters and try again. If the link expired, use Forgot Password to get a new one.");
       } else if (!msg.includes("invalid login credentials")) {
         setError(err?.message || "An unexpected error occurred.");
       }

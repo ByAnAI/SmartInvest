@@ -154,7 +154,9 @@ const App: React.FC = () => {
     }
   };
 
-  if (loading) {
+  const isResetPasswordFlow = typeof window !== 'undefined' && window.location.search.includes('mode=reset-password');
+
+  if (loading && !isResetPasswordFlow) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-slate-900">
         <div className="flex flex-col items-center space-y-4">
@@ -165,7 +167,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (!user) {
+  if (!user || isResetPasswordFlow) {
     return (
       <>
         {accountSuspended && (
@@ -183,7 +185,7 @@ const App: React.FC = () => {
           </div>
         )}
         <LandingPage onAuth={handleAuthOpen} />
-        {showAuth && (
+        {(showAuth || isResetPasswordFlow) && (
           <Auth
             onClose={() => {
               setShowAuth(false);
@@ -194,7 +196,7 @@ const App: React.FC = () => {
                 setAuthActionCode(null);
               }
             }}
-            initialMode={authMode}
+            initialMode={isResetPasswordFlow ? 'reset-password' : authMode}
             actionCode={authActionCode || undefined}
           />
         )}
