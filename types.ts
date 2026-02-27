@@ -78,3 +78,12 @@ export interface MarketAsset {
   name: string;
   market: string; // 'SP500', 'NASDAQ', 'ASIA', etc.
 }
+
+// Daily watchlist (manager-created; all users can view)
+export interface DailyWatchlist {
+  id: string;
+  watchlist_date: string; // YYYY-MM-DD
+  symbols: string[];
+  created_by: string;
+  created_at: string;
+}

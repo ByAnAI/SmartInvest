@@ -1,16 +1,20 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { getStockInsight } from '../services/geminiService';
+import { getDailyWatchlist } from '../services/supabaseService';
 import { InsightResponse } from '../types';
-
-type WatchlistMarket = 'SP500' | 'NASDAQ' | 'CRYPTO' | 'FOREX';
 
 const AIAnalysis: React.FC = () => {
   const [symbol, setSymbol] = useState('');
   const [loading, setLoading] = useState(false);
   const [insight, setInsight] = useState<InsightResponse | null>(null);
   const [error, setError] = useState('');
-  const [watchlistMarket, setWatchlistMarket] = useState<WatchlistMarket>('SP500');
+  const [todayWatchlist, setTodayWatchlist] = useState<string[]>([]);
+
+  useEffect(() => {
+    getDailyWatchlist().then((w) => {
+      if (w && w.symbols.length) setTodayWatchlist(w.symbols);
+    });
+  }, []);
 
   const handleAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,41 +62,21 @@ const AIAnalysis: React.FC = () => {
         </div>
       </div>
 
-      {/* Create watchlist of the day — interface only, no backend */}
+      {/* Today's watchlist — read-only; only admin can create it (in Admin panel) */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8">
         <h3 className="text-slate-900 font-bold uppercase tracking-widest text-sm mb-2">Watchlist of the day</h3>
-        <p className="text-slate-500 text-xs font-medium mb-6">Choose a market and create today’s watchlist. All users can see it once created.</p>
-        <div className="flex flex-col sm:flex-row sm:items-center gap-6 flex-wrap">
-          <div className="flex flex-wrap gap-3">
-            {(
-              [
-                { id: 'SP500' as const, label: 'S&P 500' },
-                { id: 'NASDAQ' as const, label: 'NASDAQ' },
-                { id: 'CRYPTO' as const, label: 'Crypto' },
-                { id: 'FOREX' as const, label: 'Forex' },
-              ] as const
-            ).map(({ id, label }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setWatchlistMarket(id)}
-                className={`px-4 py-2.5 rounded-xl text-sm font-bold uppercase tracking-wider transition-all ${
-                  watchlistMarket === id
-                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {label}
-              </button>
+        <p className="text-slate-500 text-xs font-medium mb-4">Set by your manager. View only.</p>
+        {todayWatchlist.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {todayWatchlist.map((s) => (
+              <span key={s} className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-sm font-bold border border-indigo-100">
+                {s}
+              </span>
             ))}
           </div>
-          <button
-            type="button"
-            className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition-all active:scale-95"
-          >
-            Create watchlist
-          </button>
-        </div>
+        ) : (
+          <p className="text-slate-400 text-sm font-medium">No watchlist set for today.</p>
+        )}
       </div>
 
       {error && (

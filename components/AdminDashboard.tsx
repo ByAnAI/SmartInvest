@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { getAllUsers, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData } from '../services/supabaseService';
+import { getAllUsers, updateUserStatus, updateUserRole, deleteUserFully, batchUploadMarketData, createOrUpdateDailyWatchlist, getDailyWatchlist } from '../services/supabaseService';
 import { UserMetadata } from '../types';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
@@ -20,12 +20,20 @@ const AdminDashboard: React.FC = () => {
 
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [creatingWatchlist, setCreatingWatchlist] = useState(false);
+  const [dailyWatchlistSymbols, setDailyWatchlistSymbols] = useState('');
+  const [todayWatchlist, setTodayWatchlist] = useState<string[]>([]);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       setCurrentUser(data.user);
     });
   }, []);
+
+  useEffect(() => {
+    getDailyWatchlist().then((w) => {
+      if (w) setTodayWatchlist(w.symbols);
+    });
+  }, [creatingWatchlist]);
 
   const fetchUsers = async (forceRefresh = false) => {
     if (forceRefresh) setIsSyncing(true);
@@ -122,19 +130,19 @@ const AdminDashboard: React.FC = () => {
   // --- User Management Logic ---
 
   const handleToggleStatus = async (uid: string, currentStatus: string) => {
-    if (uid === currentUser?.uid) return alert("System Integrity Check: You cannot disable your own primary administrative session.");
+    if (uid === currentUser?.id) return alert("You cannot suspend yourself.");
     const newStatus = currentStatus === 'active' ? 'disabled' : 'active';
     try {
       await updateUserStatus(uid, newStatus as 'active' | 'disabled');
       setUsers(users.map(u => u.uid === uid ? { ...u, status: newStatus as 'active' | 'disabled' } : u));
-      showFeedback(`Investor status set to ${newStatus.toUpperCase()}`);
+      showFeedback(newStatus === 'disabled' ? "User suspended." : "User activated.");
     } catch (err: any) {
-      setError("Administrative command failed: " + err.message);
+      setError("Failed to update status: " + err.message);
     }
   };
 
   const handleRoleChange = async (uid: string, currentRole: string) => {
-    if (uid === currentUser?.uid) return alert("System Integrity Check: Self-role modification is disabled for security.");
+    if (uid === currentUser?.id) return alert("System Integrity Check: Self-role modification is disabled for security.");
     const newRole = currentRole === 'admin' ? 'user' : 'admin';
     try {
       await updateUserRole(uid, newRole as 'user' | 'admin');
@@ -146,35 +154,42 @@ const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteUser = async (uid: string) => {
-    if (uid === currentUser?.uid) return alert("System Integrity Check: Self-purging is prohibited.");
-    if (!window.confirm("CRITICAL WARNING: Permanently delete this investor record? This action is recorded in the system audit logs.")) return;
+    if (uid === currentUser?.id) return alert("You cannot delete yourself.");
+    if (!window.confirm("Permanently delete this user? They will no longer appear in the list and cannot sign in with this account's profile data.")) return;
 
     try {
       await deleteUserFully(uid);
       setUsers(users.filter(u => u.uid !== uid));
-      showFeedback("Identity purged from Auth and Registry.");
+      showFeedback("User deleted.");
     } catch (err: any) {
-      setError("Purge operation failed: " + err.message);
+      setError("Delete failed: " + err.message);
     }
   };
 
-  /** Create watchlist of today — visible to all users when logged in. Placeholder: button only for now. */
+  /** Create or update watchlist of the day — only manager can create; all users can see it. */
   const handleCreateWatchlistOfToday = async () => {
+    if (!currentUser?.id) return;
+    const symbols = dailyWatchlistSymbols.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    if (symbols.length === 0) {
+      setError("Enter at least one symbol (comma or newline separated).");
+      return;
+    }
     setCreatingWatchlist(true);
     setError(null);
     try {
-      // TODO: create global watchlist (e.g. store in Supabase table), then all users see it
-      await new Promise(r => setTimeout(r, 600));
-      showFeedback("Create watchlist of today — action ready. Backend wiring next.");
+      await createOrUpdateDailyWatchlist(currentUser.id, symbols);
+      setTodayWatchlist(symbols.map(s => s.toUpperCase()));
+      setDailyWatchlistSymbols('');
+      showFeedback("Today's watchlist saved. All users can see it on the Dashboard.");
     } catch (err: any) {
-      setError(err.message || "Watchlist creation failed.");
+      setError(err?.message || "Watchlist creation failed.");
     } finally {
       setCreatingWatchlist(false);
     }
   };
 
   const handleWipeRegistry = async () => {
-    const uidsToPurge = users.filter(u => u.uid !== currentUser?.uid).map(u => u.uid);
+    const uidsToPurge = users.filter(u => u.uid !== currentUser?.id).map(u => u.uid);
     if (uidsToPurge.length === 0) return alert("Registry is already clean (excluding your master account).");
 
     const firstConfirm = window.confirm(`NUCLEAR OPTION: You are about to purge ${uidsToPurge.length} identity records from Auth and Database. This action is irreversible. Continue?`);
@@ -188,7 +203,7 @@ const AdminDashboard: React.FC = () => {
       for (const uid of uidsToPurge) {
         await deleteUserFully(uid);
       }
-      setUsers(users.filter(u => u.uid === currentUser?.uid));
+      setUsers(users.filter(u => u.uid === currentUser?.id));
       showFeedback("Institutional registry has been purged.");
     } catch (err: any) {
       setError("Bulk purge failed: " + err.message);
@@ -287,95 +302,128 @@ const AdminDashboard: React.FC = () => {
         <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
       </div>
 
-      {/* Create watchlist of today — visible to all users */}
+      {/* Create watchlist of today — only manager can create; all users can see it */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
-        <div className="flex justify-between items-center flex-wrap gap-4">
+        <div className="space-y-4">
           <div>
             <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Today&apos;s watchlist</h3>
-            <p className="text-xs text-slate-400 font-bold mt-1">Create a watchlist for today. All logged-in users can see it.</p>
+            <p className="text-xs text-slate-400 font-bold mt-1">Create a watchlist for today. All logged-in users can see it (read-only).</p>
           </div>
-          <button
-            onClick={handleCreateWatchlistOfToday}
-            disabled={creatingWatchlist}
-            className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-          >
-            {creatingWatchlist ? 'Creating...' : "Create watchlist of today"}
-          </button>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <div className="md:col-span-2 space-y-1.5">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Symbols (comma or newline separated)</label>
+              <textarea
+                value={dailyWatchlistSymbols}
+                onChange={(e) => setDailyWatchlistSymbols(e.target.value)}
+                placeholder="e.g. AAPL, MSFT, GOOGL"
+                rows={2}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+              />
+            </div>
+            <button
+              onClick={handleCreateWatchlistOfToday}
+              disabled={creatingWatchlist || !dailyWatchlistSymbols.trim()}
+              className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              {creatingWatchlist ? 'Saving...' : "Save today's watchlist"}
+            </button>
+          </div>
+          {todayWatchlist.length > 0 && (
+            <p className="text-xs text-slate-500 font-medium">
+              Current today&apos;s list: <span className="font-bold text-slate-700">{todayWatchlist.join(', ')}</span>
+            </p>
+          )}
         </div>
       </div>
 
       {!error && (
         <>
           <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-            <div className="p-6 border-b border-slate-50 bg-slate-50/30 flex justify-between items-center">
-              <h3 className="font-bold text-slate-800 uppercase tracking-widest text-xs">Identity Registry ({users.length})</h3>
+            <div className="p-6 border-b border-slate-50 bg-slate-50/30">
+              <h3 className="font-bold text-slate-800 uppercase tracking-widest text-xs">All users ({users.length})</h3>
+              <p className="text-slate-500 text-xs mt-1 font-medium">View everyone. Suspend or delete other users (you cannot suspend or delete yourself).</p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead>
                   <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 bg-slate-50/20">
-                    <th className="px-8 py-5">Identity Profile</th>
-                    <th className="px-8 py-5">System Role</th>
-                    <th className="px-8 py-5">Current Status</th>
-                    <th className="px-8 py-5 text-right">Directives</th>
+                    <th className="px-8 py-5">User</th>
+                    <th className="px-8 py-5">Role</th>
+                    <th className="px-8 py-5">Status</th>
+                    <th className="px-8 py-5 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {users.map(user => (
-                    <tr key={user.uid} className={`hover:bg-slate-50/50 transition-colors ${user.uid === currentUser?.uid ? 'bg-indigo-50/30' : ''}`}>
-                      <td className="px-8 py-5">
-                        <div className="flex items-center space-x-4">
-                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-sm border-2 ${user.role === 'admin' ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'
-                            }`}>
-                            {(user.displayName?.[0] || user.email?.[0] || 'U').toUpperCase()}
-                          </div>
-                          <div>
-                            <div className="flex items-center space-x-2">
-                              <p className="font-bold text-slate-900">{user.displayName || 'Anonymous Investor'}</p>
-                              {user.uid === currentUser?.uid && (
-                                <span className="text-[8px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-tighter">Self</span>
-                              )}
-                            </div>
-                            <p className="text-xs text-slate-400 font-medium">{user.email}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-8 py-5">
-                        <button
-                          onClick={() => handleRoleChange(user.uid, user.role)}
-                          disabled={user.uid === currentUser?.uid}
-                          className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${user.role === 'admin'
-                            ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
-                            : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-100'
-                            }`}
-                        >
-                          {user.role}
-                        </button>
-                      </td>
-                      <td className="px-8 py-5">
-                        <button
-                          onClick={() => handleToggleStatus(user.uid, user.status)}
-                          disabled={user.uid === currentUser?.uid}
-                          className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center ${user.status === 'active'
-                            ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-                            : 'bg-rose-50 text-rose-600 border border-rose-100'
-                            }`}
-                        >
-                          <span className={`w-1.5 h-1.5 rounded-full mr-2 ${user.status === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></span>
-                          {user.status}
-                        </button>
-                      </td>
-                      <td className="px-8 py-5 text-right">
-                        <button
-                          onClick={() => handleDeleteUser(user.uid)}
-                          disabled={user.uid === currentUser?.uid}
-                          className="p-3 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all disabled:opacity-0"
-                        >
-                          🗑️
-                        </button>
+                  {users.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-8 py-12 text-center text-slate-500 text-sm font-medium">
+                        No users in registry. Use &quot;Sync Registry&quot; or ensure the profiles table and RLS are set up (see supabase-profiles-table.sql).
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    users.map(user => (
+                      <tr key={user.uid} className={`hover:bg-slate-50/50 transition-colors ${user.uid === currentUser?.id ? 'bg-indigo-50/30' : ''}`}>
+                        <td className="px-8 py-5">
+                          <div className="flex items-center space-x-4">
+                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-sm border-2 ${user.role === 'admin' ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'
+                              }`}>
+                              {(user.displayName?.[0] || user.email?.[0] || 'U').toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="flex items-center space-x-2">
+                                <p className="font-bold text-slate-900">{user.displayName || 'Anonymous'}</p>
+                                {user.uid === currentUser?.id && (
+                                  <span className="text-[8px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-tighter">You</span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-400 font-medium">{user.email}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-8 py-5">
+                          <button
+                            onClick={() => handleRoleChange(user.uid, user.role)}
+                            disabled={user.uid === currentUser?.id}
+                            className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${user.role === 'admin'
+                              ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
+                              : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-100'
+                              }`}
+                          >
+                            {user.role}
+                          </button>
+                        </td>
+                        <td className="px-8 py-5">
+                          <button
+                            onClick={() => handleToggleStatus(user.uid, user.status)}
+                            disabled={user.uid === currentUser?.id}
+                            className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${user.status === 'active'
+                              ? 'bg-emerald-50 text-emerald-600 border border-emerald-100 hover:bg-emerald-100'
+                              : 'bg-rose-50 text-rose-600 border border-rose-100 hover:bg-rose-100'
+                              }`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${user.status === 'active' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+                            {user.status === 'active' ? 'Active' : 'Suspended'}
+                          </button>
+                          {user.uid !== currentUser?.id && (
+                            <span className="block mt-1 text-[9px] text-slate-400 font-medium">
+                              {user.status === 'active' ? 'Click to suspend' : 'Click to activate'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-8 py-5 text-right">
+                          <button
+                            onClick={() => handleDeleteUser(user.uid)}
+                            disabled={user.uid === currentUser?.id}
+                            title={user.uid === currentUser?.id ? 'Cannot delete yourself' : 'Delete this user'}
+                            className="inline-flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold uppercase tracking-wider"
+                          >
+                            <span aria-hidden>🗑️</span>
+                            <span>Delete</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

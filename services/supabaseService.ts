@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset } from "../types";
+import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset, DailyWatchlist } from "../types";
 
 // --- USER MANAGEMENT ---
 
@@ -58,11 +58,29 @@ export const getUserMetadata = async (uid: string): Promise<UserMetadata | null>
     return data as UserMetadata || null;
 };
 
+function rowToUserMetadata(row: any): UserMetadata {
+    return {
+        uid: row.uid,
+        email: row.email ?? '',
+        displayName: row.displayName ?? row.display_name ?? 'Investor',
+        status: (row.status === 'disabled' ? 'disabled' : 'active') as 'active' | 'disabled',
+        role: (row.role === 'admin' ? 'admin' : 'user') as 'user' | 'admin',
+        isVerified: Boolean(row.isVerified ?? row.is_verified),
+        lastLogin: row.lastLogin ?? row.last_login ?? '',
+        createdAt: row.createdAt ?? row.created_at ?? '',
+        updatedAt: row.updatedAt ?? row.updated_at ?? '',
+    };
+}
+
 export const getAllUsers = async (): Promise<UserMetadata[]> => {
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('profiles')
         .select('*');
-    return (data || []) as UserMetadata[];
+    if (error) {
+        console.error('getAllUsers:', error);
+        throw error;
+    }
+    return (data || []).map(rowToUserMetadata);
 };
 
 export const updateUserStatus = async (uid: string, status: 'active' | 'disabled') => {
@@ -248,4 +266,48 @@ export const getAllMarketAssets = async (): Promise<MarketAsset[]> => {
     }
 
     return (data || []) as MarketAsset[];
+};
+
+// --- DAILY WATCHLIST (manager-created; all users can view) ---
+
+const todayDateString = () => new Date().toISOString().slice(0, 10);
+
+export const getDailyWatchlist = async (): Promise<DailyWatchlist | null> => {
+    const today = todayDateString();
+    const { data, error } = await supabase
+        .from('daily_watchlist')
+        .select('*')
+        .eq('watchlist_date', today)
+        .maybeSingle();
+
+    if (error) {
+        console.warn("Could not fetch daily watchlist", error);
+        return null;
+    }
+    if (!data) return null;
+    return {
+        id: data.id,
+        watchlist_date: data.watchlist_date,
+        symbols: Array.isArray(data.symbols) ? data.symbols : [],
+        created_by: data.created_by,
+        created_at: data.created_at,
+    };
+};
+
+export const createOrUpdateDailyWatchlist = async (createdByUid: string, symbols: string[]): Promise<void> => {
+    const today = todayDateString();
+    const normalized = symbols.map(s => String(s).toUpperCase().trim()).filter(Boolean);
+    const { error } = await supabase
+        .from('daily_watchlist')
+        .upsert(
+            {
+                watchlist_date: today,
+                symbols: normalized,
+                created_by: createdByUid,
+                created_at: new Date().toISOString(),
+            },
+            { onConflict: 'watchlist_date' }
+        );
+
+    if (error) throw error;
 };

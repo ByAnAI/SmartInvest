@@ -111,11 +111,17 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
     setError('');
 
     try {
+      const redirectOrigin =
+        (import.meta.env.VITE_APP_URL || import.meta.env.VITE_AUTH_REDIRECT_URL || '')
+          ? (import.meta.env.VITE_APP_URL || import.meta.env.VITE_AUTH_REDIRECT_URL || 'http://localhost:3000').replace(/\/$/, '')
+          : import.meta.env.VITE_LOCAL_TESTING === 'true'
+            ? 'http://localhost:3000'
+            : window.location.origin;
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: window.location.origin
-        }
+          redirectTo: redirectOrigin,
+        },
       });
       if (error) throw error;
     } catch (err: any) {
@@ -177,17 +183,25 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
-        // In local testing, send reset link to localhost so you don't hit a paused deployed site (e.g. Netlify)
-        const isLocalTesting = import.meta.env.VITE_LOCAL_TESTING === 'true';
-        const baseUrl = isLocalTesting
-          ? (import.meta.env.VITE_APP_URL || 'http://localhost:3000').replace(/\/$/, '')
-          : window.location.origin;
+        // When app is open on localhost, always send localhost so reset link never goes to Netlify
+        const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+        const baseUrl = isLocalhost
+          ? window.location.origin
+          : (import.meta.env.VITE_APP_URL || import.meta.env.VITE_AUTH_REDIRECT_URL || '')
+            ? (import.meta.env.VITE_APP_URL || import.meta.env.VITE_AUTH_REDIRECT_URL || 'http://localhost:3000').replace(/\/$/, '')
+            : import.meta.env.VITE_LOCAL_TESTING === 'true'
+              ? 'http://localhost:3000'
+              : window.location.origin;
         const redirectTo = `${baseUrl}/?mode=reset-password`;
         const { error } = await supabase.auth.resetPasswordForEmail(emailNormalized, {
           redirectTo,
         });
         if (error) throw error;
-        setSuccessMsg("Recovery link sent. Check your inbox (and spam).");
+        setSuccessMsg(
+          isLocalhost
+            ? "Recovery link sent. Check your inbox. The link will open this app on localhost. If it opens Netlify instead, add http://localhost:3000 (and your port if different) to Supabase → Authentication → URL Configuration → Redirect URLs, then request a new link."
+            : "Recovery link sent. Check your inbox (and spam)."
+        );
         setTimeout(() => setMode('login'), 6000);
         setLoading(false);
       } else if (mode === 'reset-password') {

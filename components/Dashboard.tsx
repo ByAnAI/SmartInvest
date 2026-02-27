@@ -1,8 +1,15 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { getDailyWatchlist } from '../services/supabaseService';
 
 const Dashboard: React.FC = () => {
   const today = new Date();
+  const [todayWatchlist, setTodayWatchlist] = useState<string[]>([]);
+
+  useEffect(() => {
+    getDailyWatchlist().then((w) => {
+      if (w && w.symbols.length) setTodayWatchlist(w.symbols);
+    });
+  }, []);
   const dateStr = today.toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -114,6 +121,23 @@ const Dashboard: React.FC = () => {
           <a href="#" className="text-blue-600 hover:underline">Start Free Trial</a>
         </div>
       </div>
+
+      {/* Today's Watchlist (manager-created; read-only for all users) */}
+      {todayWatchlist.length > 0 && (
+        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 p-5">
+          <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Today&apos;s watchlist</h3>
+          <div className="flex flex-wrap gap-2">
+            {todayWatchlist.map((symbol) => (
+              <span
+                key={symbol}
+                className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-sm font-bold border border-indigo-100"
+              >
+                {symbol}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Main Market Indices */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

@@ -25,11 +25,23 @@ export const supabase = createClient(
     supabaseAnonKey || 'placeholder-anon-key'
 );
 
+function getAuthRedirectOrigin(): string {
+    if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+        return window.location.origin;
+    }
+    const explicit = import.meta.env.VITE_APP_URL || import.meta.env.VITE_AUTH_REDIRECT_URL;
+    if (explicit) return explicit.replace(/\/$/, '');
+    if (import.meta.env.VITE_LOCAL_TESTING === 'true') {
+        return 'http://localhost:3000';
+    }
+    return window.location.origin;
+}
+
 export const loginWithGoogle = async () => {
     return await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-            redirectTo: window.location.origin,
+            redirectTo: getAuthRedirectOrigin(),
         },
     });
 };
