@@ -472,8 +472,8 @@ const AdminDashboard: React.FC = () => {
       await createOrUpdateDailyWatchlist(currentUser.id, symbols);
       setTodayWatchlist(symbols.map((s) => s.toUpperCase()));
       showFeedback(`Created today's watchlist: ${symbols.length} companies (with Yahoo data). Saved for ${new Date().toISOString().slice(0, 10)}.`);
-    } catch (err: any) {
-      setError(err?.message ?? 'Failed. Is the Watchlist API running? (cd backend && uvicorn main:app --port 8000)');
+    } catch (err: unknown) {
+      setError(watchlistApiError(err, watchlistApiUrl));
     } finally {
       setCreatingWatchlistOfToday(false);
     }
@@ -519,17 +519,36 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const isBusy =
+    loading ||
+    isSyncing ||
+    uploadingMarket ||
+    creatingWatchlist ||
+    loadingShortList ||
+    loadingYahooData ||
+    creatingWatchlistOfToday ||
+    savingShortListToDaily ||
+    isPurging ||
+    fundamentalsLoading ||
+    uploadingCsv;
+
   if (loading && !isSyncing) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <div className="w-12 h-12 border-4 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
-        <p className="mt-4 text-slate-500 font-bold text-xs uppercase tracking-widest animate-pulse">Establishing Secure Socket...</p>
+        <p className="mt-4 text-slate-500 font-bold text-xs uppercase tracking-widest animate-pulse">System not ready yet. Please wait...</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto space-y-8 pb-20">
+    <div className="max-w-7xl mx-auto space-y-8 pb-20 relative">
+      {isBusy && (
+        <div className="sticky top-0 z-50 flex items-center justify-center gap-2 py-3 px-4 bg-amber-500 text-amber-950 font-bold text-sm uppercase tracking-widest rounded-b-xl shadow-lg animate-pulse">
+          <span className="w-4 h-4 border-2 border-amber-800 border-t-transparent rounded-full animate-spin" aria-hidden />
+          System busy — not ready yet. Please wait...
+        </div>
+      )}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-900 p-8 rounded-3xl text-white shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 right-0 p-8 opacity-5 text-9xl">🛡️</div>
         <div className="relative z-10">

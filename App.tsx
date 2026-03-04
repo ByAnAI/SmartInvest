@@ -161,7 +161,7 @@ const App: React.FC = () => {
       <div className="h-screen w-screen flex items-center justify-center bg-slate-900">
         <div className="flex flex-col items-center space-y-4">
           <div className="w-12 h-12 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin"></div>
-          <p className="text-indigo-200 font-medium animate-pulse tracking-widest text-xs uppercase">Initializing Wealth OS...</p>
+          <p className="text-indigo-200 font-medium animate-pulse tracking-widest text-xs uppercase">System not ready yet. Please wait...</p>
         </div>
       </div>
     );
