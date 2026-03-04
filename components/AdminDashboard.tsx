@@ -36,6 +36,17 @@ const AdminDashboard: React.FC = () => {
   const [dailyWatchlistSymbols, setDailyWatchlistSymbols] = useState('');
   const [todayWatchlist, setTodayWatchlist] = useState<string[]>([]);
 
+  // Create short list from company list (SP500 via FastAPI) and save to daily watchlist
+  const [watchlistApiUrl, setWatchlistApiUrl] = useState(
+    () => (import.meta.env.VITE_WATCHLIST_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+  );
+  const [shortListLimit, setShortListLimit] = useState(50);
+  const [loadedShortList, setLoadedShortList] = useState<{ ticker: string; company?: string; current_price?: number; sector?: string; short_name?: string }[]>([]);
+  const [loadingShortList, setLoadingShortList] = useState(false);
+  const [loadingYahooData, setLoadingYahooData] = useState(false);
+  const [savingShortListToDaily, setSavingShortListToDaily] = useState(false);
+  const [creatingWatchlistOfToday, setCreatingWatchlistOfToday] = useState(false);
+
   // Company fundamentals (admin-only)
   const [companyFundamentals, setCompanyFundamentals] = useState<CompanyFundamental[]>([]);
   const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
@@ -366,6 +377,116 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const loadSp500FromApi = async () => {
+    setLoadingShortList(true);
+    setError(null);
+    try {
+      const res = await fetch(`${watchlistApiUrl}/api/lists/sp500?limit=${shortListLimit}`);
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+      setLoadedShortList((data || []).map((r: { ticker: string; company?: string }) => ({ ticker: r.ticker, company: r.company })));
+      showFeedback(`Loaded ${(data || []).length} tickers from SP500 list.`);
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to load list. Is the Watchlist API running? (See backend/README.md)');
+      setLoadedShortList([]);
+    } finally {
+      setLoadingShortList(false);
+    }
+  };
+
+  const fetchYahooDataForShortList = async () => {
+    if (loadedShortList.length === 0) return;
+    setLoadingYahooData(true);
+    setError(null);
+    try {
+      const res = await fetch(`${watchlistApiUrl}/api/financials/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: loadedShortList.map((r) => r.ticker) }),
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+      const byTicker: Record<string, { current_price?: number; sector?: string; short_name?: string }> = {};
+      (data || []).forEach((r: { ticker: string; current_price?: number; sector?: string; short_name?: string }) => {
+        byTicker[r.ticker] = { current_price: r.current_price, sector: r.sector, short_name: r.short_name };
+      });
+      setLoadedShortList((prev) =>
+        prev.map((r) => ({
+          ...r,
+          current_price: byTicker[r.ticker]?.current_price,
+          sector: byTicker[r.ticker]?.sector ?? r.sector,
+          short_name: byTicker[r.ticker]?.short_name ?? r.company,
+        }))
+      );
+      showFeedback('Fetched current data from Yahoo Finance.');
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to fetch Yahoo data.');
+    } finally {
+      setLoadingYahooData(false);
+    }
+  };
+
+  const createWatchlistOfToday = async () => {
+    setCreatingWatchlistOfToday(true);
+    setError(null);
+    try {
+      const res = await fetch(`${watchlistApiUrl}/api/lists/sp500?limit=${shortListLimit}`);
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+      const list = (data || []).map((r: { ticker: string; company?: string }) => ({ ticker: r.ticker, company: r.company }));
+      setLoadedShortList(list);
+      if (list.length === 0) {
+        showFeedback('No tickers returned from API.');
+        return;
+      }
+      const res2 = await fetch(`${watchlistApiUrl}/api/financials/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: list.map((r) => r.ticker) }),
+      });
+      if (res2.ok) {
+        const yahooData = await res2.json();
+        const byTicker: Record<string, { current_price?: number; sector?: string; short_name?: string }> = {};
+        (yahooData || []).forEach((r: { ticker: string; current_price?: number; sector?: string; short_name?: string }) => {
+          byTicker[r.ticker] = { current_price: r.current_price, sector: r.sector, short_name: r.short_name };
+        });
+        setLoadedShortList((prev) =>
+          prev.map((r) => ({
+            ...r,
+            current_price: byTicker[r.ticker]?.current_price,
+            sector: byTicker[r.ticker]?.sector,
+            short_name: byTicker[r.ticker]?.short_name ?? r.company,
+          }))
+        );
+      }
+      if (!currentUser?.id) throw new Error('Not logged in.');
+      const symbols = list.map((r) => r.ticker).filter(Boolean);
+      await createOrUpdateDailyWatchlist(currentUser.id, symbols);
+      setTodayWatchlist(symbols.map((s) => s.toUpperCase()));
+      showFeedback(`Created today's watchlist: ${symbols.length} companies (with Yahoo data). Saved for ${new Date().toISOString().slice(0, 10)}.`);
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed. Is the Watchlist API running? (cd backend && uvicorn main:app --port 8000)');
+    } finally {
+      setCreatingWatchlistOfToday(false);
+    }
+  };
+
+  const saveShortListToDailyWatchlist = async () => {
+    if (loadedShortList.length === 0 || !currentUser?.id) return;
+    setSavingShortListToDaily(true);
+    setError(null);
+    try {
+      const symbols = loadedShortList.map((r) => r.ticker).filter(Boolean);
+      await createOrUpdateDailyWatchlist(currentUser.id, symbols);
+      setTodayWatchlist(symbols.map((s) => s.toUpperCase()));
+      showFeedback(`Saved ${symbols.length} symbols to today's watchlist (date: ${new Date().toISOString().slice(0, 10)}).`);
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to save to daily watchlist.');
+    } finally {
+      setSavingShortListToDaily(false);
+    }
+  };
+
   const handleWipeRegistry = async () => {
     const uidsToPurge = users.filter(u => u.uid !== currentUser?.id).map(u => u.uid);
     if (uidsToPurge.length === 0) return alert("Registry is already clean (excluding your master account).");
@@ -478,6 +599,83 @@ const AdminDashboard: React.FC = () => {
           </button>
         </div>
         <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
+      </div>
+
+      {/* Create short list from company list (SP500) and save to daily watchlist with date */}
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
+        <div className="space-y-4">
+          <div>
+            <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Create dated watchlist from company list</h3>
+            <p className="text-xs text-slate-400 font-bold mt-1">Load a short list (e.g. SP500) from the Watchlist API, optionally fetch current data from Yahoo Finance, then save to today&apos;s daily watchlist (stored by date).</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Watchlist API URL</label>
+              <input
+                type="url"
+                value={watchlistApiUrl}
+                onChange={(e) => setWatchlistApiUrl(e.target.value.replace(/\/$/, ''))}
+                placeholder="http://localhost:8000"
+                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-xs font-mono text-slate-700"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Short list size</label>
+              <input
+                type="number"
+                min={5}
+                max={500}
+                value={shortListLimit}
+                onChange={(e) => setShortListLimit(Math.max(5, Math.min(500, Number(e.target.value) || 20)))}
+                className="w-full px-4 py-2 border border-slate-200 rounded-xl font-bold text-slate-700"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={loadSp500FromApi}
+                disabled={loadingShortList}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {loadingShortList ? 'Loading...' : 'Load SP500 list'}
+              </button>
+              <button
+                type="button"
+                onClick={fetchYahooDataForShortList}
+                disabled={loadingYahooData || loadedShortList.length === 0}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {loadingYahooData ? 'Fetching...' : 'Fetch Yahoo data'}
+              </button>
+              <button
+                type="button"
+                onClick={saveShortListToDailyWatchlist}
+                disabled={savingShortListToDaily || loadedShortList.length === 0 || !currentUser?.id}
+                className="px-4 py-2 bg-slate-800 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-900 disabled:opacity-50"
+              >
+                {savingShortListToDaily ? 'Saving...' : "Save to today's watchlist"}
+              </button>
+            </div>
+          </div>
+          {loadedShortList.length > 0 && (
+            <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                Loaded list ({loadedShortList.length}) — will be stored with today&apos;s date when you save
+              </p>
+              <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+                {loadedShortList.map((r) => (
+                  <span
+                    key={r.ticker}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs font-mono"
+                  >
+                    <span className="font-bold text-slate-800">{r.ticker}</span>
+                    {r.current_price != null && <span className="text-slate-500">${r.current_price.toFixed(2)}</span>}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Create watchlist of today — only manager can create; all users can see it */}
