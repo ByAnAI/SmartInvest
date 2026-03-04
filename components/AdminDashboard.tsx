@@ -47,6 +47,14 @@ const AdminDashboard: React.FC = () => {
   const [savingShortListToDaily, setSavingShortListToDaily] = useState(false);
   const [creatingWatchlistOfToday, setCreatingWatchlistOfToday] = useState(false);
 
+  const watchlistApiError = (err: unknown, url: string): string => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/failed to fetch|network error|load failed|connection refused|err_connection_refused/i.test(msg) || msg === 'Failed to fetch') {
+      return `Cannot reach the Watchlist API at ${url}. Start the backend: cd backend && uvicorn main:app --port 8000 (and ensure backend/data/company_fundamentals.csv exists).`;
+    }
+    return msg || 'Request failed.';
+  };
+
   // Company fundamentals (admin-only)
   const [companyFundamentals, setCompanyFundamentals] = useState<CompanyFundamental[]>([]);
   const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
@@ -386,8 +394,8 @@ const AdminDashboard: React.FC = () => {
       const data = await res.json();
       setLoadedShortList((data || []).map((r: { ticker: string; company?: string }) => ({ ticker: r.ticker, company: r.company })));
       showFeedback(`Loaded ${(data || []).length} tickers from SP500 list.`);
-    } catch (err: any) {
-      setError(err?.message ?? 'Failed to load list. Is the Watchlist API running? (See backend/README.md)');
+    } catch (err: unknown) {
+      setError(watchlistApiError(err, watchlistApiUrl));
       setLoadedShortList([]);
     } finally {
       setLoadingShortList(false);
@@ -419,8 +427,8 @@ const AdminDashboard: React.FC = () => {
         }))
       );
       showFeedback('Fetched current data from Yahoo Finance.');
-    } catch (err: any) {
-      setError(err?.message ?? 'Failed to fetch Yahoo data.');
+    } catch (err: unknown) {
+      setError(watchlistApiError(err, watchlistApiUrl));
     } finally {
       setLoadingYahooData(false);
     }
@@ -601,12 +609,12 @@ const AdminDashboard: React.FC = () => {
         <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
       </div>
 
-      {/* Create short list from company list (SP500) and save to daily watchlist with date */}
+      {/* Create watchlist of today: one-click load SP500 (first 50) → Yahoo data → save */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
         <div className="space-y-4">
           <div>
-            <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Create dated watchlist from company list</h3>
-            <p className="text-xs text-slate-400 font-bold mt-1">Load a short list (e.g. SP500) from the Watchlist API, optionally fetch current data from Yahoo Finance, then save to today&apos;s daily watchlist (stored by date).</p>
+            <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Create watchlist of today</h3>
+            <p className="text-xs text-slate-400 font-bold mt-1">Load the first 50 companies from the Watchlist API (SP500), fetch live data from Yahoo Finance, then save to today&apos;s daily watchlist. One click does it all.</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
             <div className="space-y-1.5">
@@ -620,58 +628,82 @@ const AdminDashboard: React.FC = () => {
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Short list size</label>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Short list size (companies)</label>
               <input
                 type="number"
                 min={5}
                 max={500}
                 value={shortListLimit}
-                onChange={(e) => setShortListLimit(Math.max(5, Math.min(500, Number(e.target.value) || 20)))}
+                onChange={(e) => setShortListLimit(Math.max(5, Math.min(500, Number(e.target.value) || 50)))}
                 className="w-full px-4 py-2 border border-slate-200 rounded-xl font-bold text-slate-700"
               />
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 items-end">
               <button
                 type="button"
-                onClick={loadSp500FromApi}
-                disabled={loadingShortList}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-50"
+                onClick={createWatchlistOfToday}
+                disabled={creatingWatchlistOfToday}
+                className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-50 shadow-lg shadow-indigo-200"
               >
-                {loadingShortList ? 'Loading...' : 'Load SP500 list'}
+                {creatingWatchlistOfToday ? 'Creating…' : 'Create watchlist of today'}
               </button>
-              <button
-                type="button"
-                onClick={fetchYahooDataForShortList}
-                disabled={loadingYahooData || loadedShortList.length === 0}
-                className="px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-emerald-700 disabled:opacity-50"
-              >
-                {loadingYahooData ? 'Fetching...' : 'Fetch Yahoo data'}
-              </button>
-              <button
-                type="button"
-                onClick={saveShortListToDailyWatchlist}
-                disabled={savingShortListToDaily || loadedShortList.length === 0 || !currentUser?.id}
-                className="px-4 py-2 bg-slate-800 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-900 disabled:opacity-50"
-              >
-                {savingShortListToDaily ? 'Saving...' : "Save to today's watchlist"}
-              </button>
+              <span className="text-[10px] text-slate-400">Loads {shortListLimit} → Yahoo → Save</span>
             </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={loadSp500FromApi}
+              disabled={loadingShortList}
+              className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg font-bold text-[10px] uppercase tracking-widest hover:bg-slate-200 disabled:opacity-50"
+            >
+              {loadingShortList ? 'Loading...' : 'Load list only'}
+            </button>
+            <button
+              type="button"
+              onClick={fetchYahooDataForShortList}
+              disabled={loadingYahooData || loadedShortList.length === 0}
+              className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg font-bold text-[10px] uppercase tracking-widest hover:bg-slate-200 disabled:opacity-50"
+            >
+              {loadingYahooData ? 'Fetching...' : 'Fetch Yahoo data'}
+            </button>
+            <button
+              type="button"
+              onClick={saveShortListToDailyWatchlist}
+              disabled={savingShortListToDaily || loadedShortList.length === 0 || !currentUser?.id}
+              className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg font-bold text-[10px] uppercase tracking-widest hover:bg-slate-200 disabled:opacity-50"
+            >
+              {savingShortListToDaily ? 'Saving...' : 'Save to watchlist'}
+            </button>
           </div>
           {loadedShortList.length > 0 && (
             <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
-                Loaded list ({loadedShortList.length}) — will be stored with today&apos;s date when you save
+                Loaded list ({loadedShortList.length}) — data from Yahoo Finance
               </p>
-              <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-                {loadedShortList.map((r) => (
-                  <span
-                    key={r.ticker}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs font-mono"
-                  >
-                    <span className="font-bold text-slate-800">{r.ticker}</span>
-                    {r.current_price != null && <span className="text-slate-500">${r.current_price.toFixed(2)}</span>}
-                  </span>
-                ))}
+              <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="sticky top-0 bg-slate-100">
+                    <tr>
+                      <th className="p-2 font-black text-slate-600 uppercase">Ticker</th>
+                      <th className="p-2 font-black text-slate-600 uppercase">Name</th>
+                      <th className="p-2 font-black text-slate-600 uppercase">Price</th>
+                      <th className="p-2 font-black text-slate-600 uppercase">Sector</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loadedShortList.map((r) => (
+                      <tr key={r.ticker} className="border-t border-slate-200">
+                        <td className="p-2 font-mono font-bold text-slate-800">{r.ticker}</td>
+                        <td className="p-2 text-slate-600">{r.short_name || r.company || '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">
+                          {r.current_price != null ? `$${r.current_price.toFixed(2)}` : '—'}
+                        </td>
+                        <td className="p-2 text-slate-500">{r.sector || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
