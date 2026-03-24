@@ -33,5 +33,5 @@ API base URL: `http://localhost:8000`
 
 - `GET /api/lists/sp500?limit=100` – company list (tickers + metadata), optional limit for short list
 - `GET /api/financials/{ticker}` – current Yahoo Finance summary for one ticker
-- `POST /api/financials/batch` – body `{"tickers": ["AAPL", "MSFT"]}`, returns current data for each (max 50)
+- `POST /api/financials/batch` – body `{"tickers": ["AAPL", "MSFT"]}`, returns current data for each (max 100)
 - `GET /api/health` – health check

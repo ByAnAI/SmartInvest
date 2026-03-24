@@ -4,27 +4,39 @@ import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, Market
 // --- USER MANAGEMENT ---
 
 export const initializeUser = async (uid: string, email?: string | null, displayName?: string | null) => {
+    const MASTER_ADMIN_EMAIL = "idris.elfeghi@byanai.com";
+    const emailNormalized = (email || '').trim().toLowerCase();
+
     // Try to fetch user from 'profiles' table (renamed from 'users' to avoid confusion with internal auth)
-    const { data, error } = await supabase
+    const { data } = await supabase
         .from('profiles')
         .select('*')
         .eq('uid', uid)
         .single();
 
     if (data) {
+        // Keep the master account admin even if profile role was changed accidentally.
+        if (emailNormalized === MASTER_ADMIN_EMAIL && data.role !== 'admin') {
+            const { error: promoteError } = await supabase
+                .from('profiles')
+                .update({ role: 'admin', status: 'active' })
+                .eq('uid', uid);
+            if (!promoteError) {
+                return { ...data, role: 'admin', status: 'active' } as UserMetadata;
+            }
+        }
         return data as UserMetadata;
     }
 
     // Auto-promote specific email to admin
-    const MASTER_ADMIN_EMAIL = "idris.elfeghi@byanai.com";
-    const role = (email === MASTER_ADMIN_EMAIL) ? 'admin' : 'user';
+    const role = (emailNormalized === MASTER_ADMIN_EMAIL) ? 'admin' : 'user';
 
     const { error: insertError } = await supabase
         .from('profiles')
-        .insert({ uid, email: email || '', status: 'active', role });
+        .insert({ uid, email: emailNormalized, status: 'active', role });
 
     if (insertError) throw insertError;
-    return { uid, email: email || '', displayName: displayName || 'Investor', status: 'active' as const, role, isVerified: false, lastLogin: '', createdAt: '', updatedAt: '' };
+    return { uid, email: emailNormalized, displayName: displayName || 'Investor', status: 'active' as const, role, isVerified: false, lastLogin: '', createdAt: '', updatedAt: '' };
 };
 
 export const markUserAsVerified = async (uid: string) => {
@@ -314,7 +326,7 @@ export const createOrUpdateDailyWatchlist = async (createdByUid: string, symbols
             { onConflict: 'watchlist_date' }
         );
 
-    if (error) throw error;
+    if (error) throw new Error(error.message || 'Failed to save daily watchlist.');
 };
 
 // --- COMPANY FUNDAMENTALS (reference data; admin-only write) ---

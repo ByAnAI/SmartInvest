@@ -18,6 +18,47 @@ import { UserMetadata, CompanyFundamental } from '../types';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
 
+function formatStatementNum(val: number | null | undefined): string {
+  if (val == null || Number.isNaN(val)) return '—';
+  const abs = Math.abs(val);
+  if (abs >= 1e12) return `${(val / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${(val / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(val / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(val / 1e3).toFixed(2)}K`;
+  return typeof val === 'number' && !Number.isInteger(val) ? val.toFixed(2) : String(val);
+}
+
+function StatementTable({ data }: { data: { index: unknown[]; columns: unknown[]; data: unknown[][] } }) {
+  const idx = data.index || [];
+  const cols = data.columns || [];
+  const rows = data.data || [];
+  const formatVal = (v: unknown) => (v == null || v === '') ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v);
+  return (
+    <div className="overflow-x-auto rounded-xl border border-slate-200">
+      <table className="w-full text-left text-xs border-collapse">
+        <thead className="bg-slate-100">
+          <tr>
+            <th className="p-2 font-bold text-slate-600">Item</th>
+            {cols.map((c, j) => (
+              <th key={j} className="p-2 font-bold text-slate-600">{String(c)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {idx.map((label, i) => (
+            <tr key={i} className="border-t border-slate-100">
+              <td className="p-2 font-medium text-slate-800">{String(label)}</td>
+              {(rows[i] || []).map((cell, j) => (
+                <td key={j} className="p-2 text-slate-600 font-mono">{formatVal(cell)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const AdminDashboard: React.FC = () => {
   const [users, setUsers] = useState<UserMetadata[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,25 +76,57 @@ const AdminDashboard: React.FC = () => {
   const [creatingWatchlist, setCreatingWatchlist] = useState(false);
   const [dailyWatchlistSymbols, setDailyWatchlistSymbols] = useState('');
   const [todayWatchlist, setTodayWatchlist] = useState<string[]>([]);
+  const [dailyWatchlistTableMissing, setDailyWatchlistTableMissing] = useState(false);
 
   // Create short list from company list (SP500 via FastAPI) and save to daily watchlist
   const [watchlistApiUrl, setWatchlistApiUrl] = useState(
     () => (import.meta.env.VITE_WATCHLIST_API_URL || 'http://localhost:8000').replace(/\/$/, '')
   );
-  const [shortListLimit, setShortListLimit] = useState(50);
-  const [loadedShortList, setLoadedShortList] = useState<{ ticker: string; company?: string; current_price?: number; sector?: string; short_name?: string }[]>([]);
+  const [shortListLimit, setShortListLimit] = useState(100);
+  const [loadedShortList, setLoadedShortList] = useState<{
+    ticker: string;
+    company?: string;
+    current_price?: number;
+    sector?: string;
+    short_name?: string;
+    total_assets?: number | null;
+    total_liabilities?: number | null;
+    total_revenue?: number | null;
+    net_income?: number | null;
+    operating_cash_flow?: number | null;
+    free_cash_flow?: number | null;
+  }[]>([]);
   const [loadingShortList, setLoadingShortList] = useState(false);
   const [loadingYahooData, setLoadingYahooData] = useState(false);
   const [savingShortListToDaily, setSavingShortListToDaily] = useState(false);
   const [creatingWatchlistOfToday, setCreatingWatchlistOfToday] = useState(false);
+  const [companyStatementsTicker, setCompanyStatementsTicker] = useState<string | null>(null);
+  const [companyStatementsData, setCompanyStatementsData] = useState<{
+    balance_sheet: { index: unknown[]; columns: unknown[]; data: unknown[][] } | null;
+    income_statement: { index: unknown[]; columns: unknown[]; data: unknown[][] } | null;
+    cash_flow: { index: unknown[]; columns: unknown[]; data: unknown[][] } | null;
+  } | null>(null);
+  const [loadingStatements, setLoadingStatements] = useState(false);
+
+  const getErrorMessage = (err: unknown): string => {
+    if (err instanceof Error) return err.message;
+    if (err && typeof err === 'object' && 'message' in err && typeof (err as { message?: unknown }).message === 'string') {
+      return (err as { message: string }).message;
+    }
+    return err != null ? String(err) : 'Unknown error';
+  };
 
   const watchlistApiError = (err: unknown, url: string): string => {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     if (/failed to fetch|network error|load failed|connection refused|err_connection_refused/i.test(msg) || msg === 'Failed to fetch') {
       return `Cannot reach the Watchlist API at ${url}. Start the backend: cd backend && uvicorn main:app --port 8000 (and ensure backend/data/company_fundamentals.csv exists).`;
     }
     return msg || 'Request failed.';
   };
+
+
+  const isDailyWatchlistTableMissingError = (msg: string): boolean =>
+    /schema cache|could not find the table|relation.*does not exist|daily_watchlist/i.test(msg);
 
   // Company fundamentals (admin-only)
   const [companyFundamentals, setCompanyFundamentals] = useState<CompanyFundamental[]>([]);
@@ -80,9 +153,19 @@ const AdminDashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    getDailyWatchlist().then((w) => {
+    const loadTodayWatchlist = async () => {
+      const { error } = await supabase.from('daily_watchlist').select('id').limit(1);
+      if (error) {
+        if (isDailyWatchlistTableMissingError(error.message || '')) {
+          setDailyWatchlistTableMissing(true);
+          return;
+        }
+      }
+      setDailyWatchlistTableMissing(false);
+      const w = await getDailyWatchlist();
       if (w) setTodayWatchlist(w.symbols);
-    });
+    };
+    loadTodayWatchlist();
   }, [creatingWatchlist]);
 
   const fetchCompanyFundamentals = async () => {
@@ -273,8 +356,8 @@ const AdminDashboard: React.FC = () => {
       setTodayWatchlist(symbols.map(s => s.toUpperCase()));
       setDailyWatchlistSymbols('');
       showFeedback("Today's watchlist saved. All users can see it on the Dashboard.");
-    } catch (err: any) {
-      setError(err?.message || "Watchlist creation failed.");
+    } catch (err: unknown) {
+      setError(getErrorMessage(err) || "Watchlist creation failed.");
     } finally {
       setCreatingWatchlist(false);
     }
@@ -414,21 +497,53 @@ const AdminDashboard: React.FC = () => {
       });
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       const data = await res.json();
-      const byTicker: Record<string, { current_price?: number; sector?: string; short_name?: string }> = {};
-      (data || []).forEach((r: { ticker: string; current_price?: number; sector?: string; short_name?: string }) => {
-        byTicker[r.ticker] = { current_price: r.current_price, sector: r.sector, short_name: r.short_name };
+      const byTicker: Record<string, {
+        current_price?: number; sector?: string; short_name?: string;
+        total_assets?: number | null; total_liabilities?: number | null;
+        total_revenue?: number | null; net_income?: number | null;
+        operating_cash_flow?: number | null; free_cash_flow?: number | null;
+      }> = {};
+      (data || []).forEach((r: Record<string, unknown>) => {
+        const t = String(r.ticker || '').toUpperCase();
+        if (!t) return;
+        byTicker[t] = {
+          current_price: typeof r.current_price === 'number' ? r.current_price : undefined,
+          sector: typeof r.sector === 'string' ? r.sector : undefined,
+          short_name: typeof r.short_name === 'string' ? r.short_name : undefined,
+          total_assets: r.total_assets != null ? Number(r.total_assets) : null,
+          total_liabilities: r.total_liabilities != null ? Number(r.total_liabilities) : null,
+          total_revenue: r.total_revenue != null ? Number(r.total_revenue) : null,
+          net_income: r.net_income != null ? Number(r.net_income) : null,
+          operating_cash_flow: r.operating_cash_flow != null ? Number(r.operating_cash_flow) : null,
+          free_cash_flow: r.free_cash_flow != null ? Number(r.free_cash_flow) : null,
+        };
       });
       setLoadedShortList((prev) =>
-        prev.map((r) => ({
-          ...r,
-          current_price: byTicker[r.ticker]?.current_price,
-          sector: byTicker[r.ticker]?.sector ?? r.sector,
-          short_name: byTicker[r.ticker]?.short_name ?? r.company,
-        }))
+        prev.map((r) => {
+          const b = byTicker[r.ticker];
+          return {
+            ...r,
+            current_price: b?.current_price ?? r.current_price,
+            sector: b?.sector ?? r.sector,
+            short_name: b?.short_name ?? r.company,
+            total_assets: b?.total_assets,
+            total_liabilities: b?.total_liabilities,
+            total_revenue: b?.total_revenue,
+            net_income: b?.net_income,
+            operating_cash_flow: b?.operating_cash_flow,
+            free_cash_flow: b?.free_cash_flow,
+          };
+        })
       );
       showFeedback('Fetched current data from Yahoo Finance.');
     } catch (err: unknown) {
-      setError(watchlistApiError(err, watchlistApiUrl));
+      const msg = getErrorMessage(err);
+      if (isDailyWatchlistTableMissingError(msg)) {
+        setDailyWatchlistTableMissing(true);
+        setError("Daily watchlist table not found. Run supabase-daily-watchlist.sql in Supabase SQL Editor, then try again.");
+      } else {
+        setError(watchlistApiError(err, watchlistApiUrl));
+      }
     } finally {
       setLoadingYahooData(false);
     }
@@ -454,17 +569,43 @@ const AdminDashboard: React.FC = () => {
       });
       if (res2.ok) {
         const yahooData = await res2.json();
-        const byTicker: Record<string, { current_price?: number; sector?: string; short_name?: string }> = {};
-        (yahooData || []).forEach((r: { ticker: string; current_price?: number; sector?: string; short_name?: string }) => {
-          byTicker[r.ticker] = { current_price: r.current_price, sector: r.sector, short_name: r.short_name };
+        const byTicker: Record<string, {
+          current_price?: number; sector?: string; short_name?: string;
+          total_assets?: number | null; total_liabilities?: number | null;
+          total_revenue?: number | null; net_income?: number | null;
+          operating_cash_flow?: number | null; free_cash_flow?: number | null;
+        }> = {};
+        (yahooData || []).forEach((r: Record<string, unknown>) => {
+          const t = String(r.ticker || '').toUpperCase();
+          if (!t) return;
+          byTicker[t] = {
+            current_price: typeof r.current_price === 'number' ? r.current_price : undefined,
+            sector: typeof r.sector === 'string' ? r.sector : undefined,
+            short_name: typeof r.short_name === 'string' ? r.short_name : undefined,
+            total_assets: r.total_assets != null ? Number(r.total_assets) : null,
+            total_liabilities: r.total_liabilities != null ? Number(r.total_liabilities) : null,
+            total_revenue: r.total_revenue != null ? Number(r.total_revenue) : null,
+            net_income: r.net_income != null ? Number(r.net_income) : null,
+            operating_cash_flow: r.operating_cash_flow != null ? Number(r.operating_cash_flow) : null,
+            free_cash_flow: r.free_cash_flow != null ? Number(r.free_cash_flow) : null,
+          };
         });
         setLoadedShortList((prev) =>
-          prev.map((r) => ({
-            ...r,
-            current_price: byTicker[r.ticker]?.current_price,
-            sector: byTicker[r.ticker]?.sector,
-            short_name: byTicker[r.ticker]?.short_name ?? r.company,
-          }))
+          prev.map((r) => {
+            const b = byTicker[r.ticker];
+            return {
+              ...r,
+              current_price: b?.current_price ?? r.current_price,
+              sector: b?.sector ?? r.sector,
+              short_name: b?.short_name ?? r.company,
+              total_assets: b?.total_assets,
+              total_liabilities: b?.total_liabilities,
+              total_revenue: b?.total_revenue,
+              net_income: b?.net_income,
+              operating_cash_flow: b?.operating_cash_flow,
+              free_cash_flow: b?.free_cash_flow,
+            };
+          })
         );
       }
       if (!currentUser?.id) throw new Error('Not logged in.');
@@ -473,7 +614,13 @@ const AdminDashboard: React.FC = () => {
       setTodayWatchlist(symbols.map((s) => s.toUpperCase()));
       showFeedback(`Created today's watchlist: ${symbols.length} companies (with Yahoo data). Saved for ${new Date().toISOString().slice(0, 10)}.`);
     } catch (err: unknown) {
-      setError(watchlistApiError(err, watchlistApiUrl));
+      const msg = getErrorMessage(err);
+      if (isDailyWatchlistTableMissingError(msg)) {
+        setDailyWatchlistTableMissing(true);
+        setError("Daily watchlist table not found. Run supabase-daily-watchlist.sql in Supabase SQL Editor, then try again.");
+      } else {
+        setError(watchlistApiError(err, watchlistApiUrl));
+      }
     } finally {
       setCreatingWatchlistOfToday(false);
     }
@@ -488,11 +635,47 @@ const AdminDashboard: React.FC = () => {
       await createOrUpdateDailyWatchlist(currentUser.id, symbols);
       setTodayWatchlist(symbols.map((s) => s.toUpperCase()));
       showFeedback(`Saved ${symbols.length} symbols to today's watchlist (date: ${new Date().toISOString().slice(0, 10)}).`);
-    } catch (err: any) {
-      setError(err?.message ?? 'Failed to save to daily watchlist.');
+    } catch (err: unknown) {
+      const msg = getErrorMessage(err);
+      if (isDailyWatchlistTableMissingError(msg)) {
+        setDailyWatchlistTableMissing(true);
+        setError("Daily watchlist table not found. Run supabase-daily-watchlist.sql in Supabase SQL Editor, then try again.");
+      } else {
+        setError(msg || 'Failed to save to daily watchlist.');
+      }
     } finally {
       setSavingShortListToDaily(false);
     }
+  };
+
+  const openCompanyStatements = async (ticker: string) => {
+    setCompanyStatementsTicker(ticker);
+    setCompanyStatementsData(null);
+    setLoadingStatements(true);
+    setError(null);
+    try {
+      const res = await fetch(`${watchlistApiUrl}/api/financials/${encodeURIComponent(ticker)}/statements`);
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+      if (data) {
+        setCompanyStatementsData({
+          balance_sheet: data.balance_sheet ?? null,
+          income_statement: data.income_statement ?? null,
+          cash_flow: data.cash_flow ?? null,
+        });
+      } else {
+        setCompanyStatementsData(null);
+      }
+    } catch (err: unknown) {
+      setError(getErrorMessage(err) || 'Failed to load financial statements.');
+    } finally {
+      setLoadingStatements(false);
+    }
+  };
+
+  const closeCompanyStatements = () => {
+    setCompanyStatementsTicker(null);
+    setCompanyStatementsData(null);
   };
 
   const handleWipeRegistry = async () => {
@@ -628,12 +811,20 @@ const AdminDashboard: React.FC = () => {
         <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
       </div>
 
-      {/* Create watchlist of today: one-click load SP500 (first 50) → Yahoo data → save */}
+      {/* Create watchlist of today: one-click load SP500 (first 100) → Yahoo data → save */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
+        {dailyWatchlistTableMissing && (
+          <div className="mb-6 p-6 rounded-2xl bg-amber-50 border border-amber-200">
+            <p className="font-bold text-amber-900 text-sm">Daily watchlist table not found.</p>
+            <p className="text-amber-800 text-xs mt-2">
+              Create it by running <code className="bg-amber-100 px-1.5 py-0.5 rounded font-mono text-[11px]">supabase-daily-watchlist.sql</code> in your Supabase Dashboard → SQL Editor (run the entire script).
+            </p>
+          </div>
+        )}
         <div className="space-y-4">
           <div>
             <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Create watchlist of today</h3>
-            <p className="text-xs text-slate-400 font-bold mt-1">Load the first 50 companies from the Watchlist API (SP500), fetch live data from Yahoo Finance, then save to today&apos;s daily watchlist. One click does it all.</p>
+            <p className="text-xs text-slate-400 font-bold mt-1">Load the first 100 companies from the Watchlist API (SP500), fetch live data from Yahoo Finance, then save to today&apos;s daily watchlist. One click does it all.</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
             <div className="space-y-1.5">
@@ -651,9 +842,9 @@ const AdminDashboard: React.FC = () => {
               <input
                 type="number"
                 min={5}
-                max={500}
+                max={100}
                 value={shortListLimit}
-                onChange={(e) => setShortListLimit(Math.max(5, Math.min(500, Number(e.target.value) || 50)))}
+                onChange={(e) => setShortListLimit(Math.max(5, Math.min(100, Number(e.target.value) || 100)))}
                 className="w-full px-4 py-2 border border-slate-200 rounded-xl font-bold text-slate-700"
               />
             </div>
@@ -661,7 +852,7 @@ const AdminDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={createWatchlistOfToday}
-                disabled={creatingWatchlistOfToday}
+                disabled={creatingWatchlistOfToday || dailyWatchlistTableMissing}
                 className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 disabled:opacity-50 shadow-lg shadow-indigo-200"
               >
                 {creatingWatchlistOfToday ? 'Creating…' : 'Create watchlist of today'}
@@ -689,7 +880,7 @@ const AdminDashboard: React.FC = () => {
             <button
               type="button"
               onClick={saveShortListToDailyWatchlist}
-              disabled={savingShortListToDaily || loadedShortList.length === 0 || !currentUser?.id}
+              disabled={savingShortListToDaily || loadedShortList.length === 0 || !currentUser?.id || dailyWatchlistTableMissing}
               className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg font-bold text-[10px] uppercase tracking-widest hover:bg-slate-200 disabled:opacity-50"
             >
               {savingShortListToDaily ? 'Saving...' : 'Save to watchlist'}
@@ -698,31 +889,100 @@ const AdminDashboard: React.FC = () => {
           {loadedShortList.length > 0 && (
             <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
-                Loaded list ({loadedShortList.length}) — data from Yahoo Finance
+                Loaded list ({loadedShortList.length}) — Balance sheet, Cash flow, Earnings / Income statement from Yahoo Finance
               </p>
-              <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead className="sticky top-0 bg-slate-100">
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                <table className="w-full text-left text-xs border-collapse min-w-[900px]">
+                  <thead className="sticky top-0 bg-slate-100 z-10">
                     <tr>
-                      <th className="p-2 font-black text-slate-600 uppercase">Ticker</th>
-                      <th className="p-2 font-black text-slate-600 uppercase">Name</th>
-                      <th className="p-2 font-black text-slate-600 uppercase">Price</th>
-                      <th className="p-2 font-black text-slate-600 uppercase">Sector</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Ticker</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Name</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Price</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Sector</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Balance sheet — Total Assets</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Balance sheet — Total Liab.</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Income — Revenue</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Earnings — Net Income</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Cash flow — Operating</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Cash flow — Free</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Full statements</th>
                     </tr>
                   </thead>
                   <tbody>
                     {loadedShortList.map((r) => (
                       <tr key={r.ticker} className="border-t border-slate-200">
                         <td className="p-2 font-mono font-bold text-slate-800">{r.ticker}</td>
-                        <td className="p-2 text-slate-600">{r.short_name || r.company || '—'}</td>
+                        <td className="p-2 text-slate-600 max-w-[120px] truncate" title={r.short_name || r.company || ''}>{r.short_name || r.company || '—'}</td>
                         <td className="p-2 font-mono text-slate-700">
                           {r.current_price != null ? `$${r.current_price.toFixed(2)}` : '—'}
                         </td>
                         <td className="p-2 text-slate-500">{r.sector || '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.total_assets)}</td>
+                        <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.total_liabilities)}</td>
+                        <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.total_revenue)}</td>
+                        <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.net_income)}</td>
+                        <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.operating_cash_flow)}</td>
+                        <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.free_cash_flow)}</td>
+                        <td className="p-2">
+                          <button
+                            type="button"
+                            onClick={() => openCompanyStatements(r.ticker)}
+                            className="text-indigo-600 font-bold hover:underline text-[10px]"
+                          >
+                            View all
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {/* Modal: company financial statements (balance_sheet, income_statement, cash_flow) */}
+          {companyStatementsTicker && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={closeCompanyStatements}>
+              <div className="bg-white rounded-2xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+                  <h4 className="font-black text-slate-900 uppercase tracking-widest text-sm">
+                    {loadedShortList.find((r) => r.ticker === companyStatementsTicker)?.short_name ||
+                      loadedShortList.find((r) => r.ticker === companyStatementsTicker)?.company ||
+                      companyStatementsTicker}{' '}
+                    — balance_sheet, income_statement, cash_flow
+                  </h4>
+                  <button type="button" onClick={closeCompanyStatements} className="text-slate-500 hover:text-slate-800 font-bold text-lg leading-none">×</button>
+                </div>
+                <div className="p-4 overflow-y-auto flex-1 space-y-6">
+                  {loadingStatements && (
+                    <p className="text-slate-500 font-medium">Loading statements…</p>
+                  )}
+                  {!loadingStatements && companyStatementsData && (
+                    <>
+                      {companyStatementsData.balance_sheet && (
+                        <div>
+                          <h5 className="font-bold text-slate-700 uppercase text-xs tracking-widest mb-2">Balance sheet</h5>
+                          <StatementTable data={companyStatementsData.balance_sheet} />
+                        </div>
+                      )}
+                      {companyStatementsData.income_statement && (
+                        <div>
+                          <h5 className="font-bold text-slate-700 uppercase text-xs tracking-widest mb-2">Income statement</h5>
+                          <StatementTable data={companyStatementsData.income_statement} />
+                        </div>
+                      )}
+                      {companyStatementsData.cash_flow && (
+                        <div>
+                          <h5 className="font-bold text-slate-700 uppercase text-xs tracking-widest mb-2">Cash flow</h5>
+                          <StatementTable data={companyStatementsData.cash_flow} />
+                        </div>
+                      )}
+                      {!companyStatementsData.balance_sheet && !companyStatementsData.income_statement && !companyStatementsData.cash_flow && (
+                        <p className="text-slate-500">No statement data available for this ticker.</p>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -731,6 +991,14 @@ const AdminDashboard: React.FC = () => {
 
       {/* Create watchlist of today — only manager can create; all users can see it */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
+        {dailyWatchlistTableMissing && (
+          <div className="mb-6 p-6 rounded-2xl bg-amber-50 border border-amber-200">
+            <p className="font-bold text-amber-900 text-sm">Daily watchlist table not found.</p>
+            <p className="text-amber-800 text-xs mt-2">
+              Create it by running <code className="bg-amber-100 px-1.5 py-0.5 rounded font-mono text-[11px]">supabase-daily-watchlist.sql</code> in your Supabase Dashboard → SQL Editor (run the entire script).
+            </p>
+          </div>
+        )}
         <div className="space-y-4">
           <div>
             <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Today&apos;s watchlist</h3>
@@ -749,7 +1017,7 @@ const AdminDashboard: React.FC = () => {
             </div>
             <button
               onClick={handleCreateWatchlistOfToday}
-              disabled={creatingWatchlist || !dailyWatchlistSymbols.trim()}
+              disabled={creatingWatchlist || !dailyWatchlistSymbols.trim() || dailyWatchlistTableMissing}
               className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               {creatingWatchlist ? 'Saving...' : "Save today's watchlist"}

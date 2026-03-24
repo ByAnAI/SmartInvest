@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from data_loader import fetch_financial_summary, fetch_financials_batch, load_tickers
+from data_loader import fetch_financial_summary, fetch_financial_statements, fetch_financials_batch, load_tickers
 
 app = FastAPI(title="Watchlist API", version="0.1.0")
 
@@ -32,9 +32,15 @@ def get_financials(ticker: str) -> dict[str, Any] | None:
     return fetch_financial_summary(ticker)
 
 
+@app.get("/api/financials/{ticker}/statements")
+def get_financial_statements(ticker: str) -> dict[str, Any] | None:
+    """Fetch balance_sheet, income_statement, cash_flow for one ticker."""
+    return fetch_financial_statements(ticker)
+
+
 @app.post("/api/financials/batch")
 def post_financials_batch(body: dict[str, list[str]]) -> list[dict[str, Any]]:
-    """Fetch current data for multiple tickers (max 50). Body: { \"tickers\": [\"AAPL\", \"MSFT\"] }"""
+    """Fetch current data for multiple tickers (max 100). Body: { \"tickers\": [\"AAPL\", \"MSFT\"] }"""
     tickers = body.get("tickers") or []
     return fetch_financials_batch(tickers)
 

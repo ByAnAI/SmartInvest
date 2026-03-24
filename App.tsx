@@ -55,10 +55,11 @@ const App: React.FC = () => {
         currentUser.email,
         currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0]
       ).then((metadata) => {
-        if (metadata.status === 'disabled') {
+        const isMasterAdmin = (currentUser.email || '').trim().toLowerCase() === 'idris.elfeghi@byanai.com';
+        if (metadata.status === 'disabled' && !isMasterAdmin) {
           signOutSuspended();
         } else {
-          setUserMetadata(metadata);
+          setUserMetadata(isMasterAdmin ? { ...metadata, role: 'admin', status: 'active' } : metadata);
         }
       }).catch(() => setUserMetadata(null));
     };
@@ -129,7 +130,7 @@ const App: React.FC = () => {
   // Logic to determine admin status: 
   // 1. Hard check for specific master email
   // 2. Database role check
-  const isAdmin = user?.email === 'idris.elfeghi@byanai.com' || userMetadata?.role === 'admin';
+  const isAdmin = ((user?.email || '').trim().toLowerCase() === 'idris.elfeghi@byanai.com') || userMetadata?.role === 'admin';
 
   const renderContent = () => {
     switch (activeTab) {

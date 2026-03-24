@@ -160,14 +160,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         });
 
         if (error) throw error;
-
-        // Check if email is verified (Supabase handles this in settings, but we can check session)
-        if (data.user && !data.user.email_confirmed_at) {
-          await supabase.auth.signOut();
-          setError("Your email is not verified. Please check your inbox.");
-          setLoading(false);
-          return;
-        }
+        void data;
 
         onClose();
 

@@ -1,0 +1,56 @@
+Ticker,Company,Sector,Location,Industry,Website
+AAPL,Apple Inc.,Technology,United States,Consumer Electronics,https://www.apple.com
+MSFT,Microsoft Corporation,Technology,United States,Software—Infrastructure,https://www.microsoft.com
+GOOGL,Alphabet Inc.,Technology,United States,Internet Content & Information,https://abc.xyz
+AMZN,Amazon.com Inc.,Consumer Cyclical,United States,Internet Retail,https://www.amazon.com
+NVDA,NVIDIA Corporation,Technology,United States,Semiconductors,https://www.nvidia.com
+META,Meta Platforms Inc.,Communication Services,United States,Internet Content & Information,https://www.meta.com
+BRK.B,Berkshire Hathaway Inc.,Financial Services,United States,Insurance—Diversified,https://www.berkshirehathaway.com
+JPM,JPMorgan Chase & Co.,Financial Services,United States,Banks—Diversified,https://www.jpmorganchase.com
+V,Visa Inc.,Financial Services,United States,Credit Services,https://www.visa.com
+JNJ,Johnson & Johnson,Healthcare,United States,Drug Manufacturers—General,https://www.jnj.com
+WMT,Walmart Inc.,Consumer Defensive,United States,Discount Stores,https://www.walmart.com
+PG,Procter & Gamble Co.,Consumer Defensive,United States,Household & Personal Products,https://www.pg.com
+MA,Mastercard Inc.,Financial Services,United States,Credit Services,https://www.mastercard.com
+HD,The Home Depot Inc.,Consumer Cyclical,United States,Home Improvement Retail,https://www.homedepot.com
+CVX,Chevron Corporation,Energy,United States,Oil & Gas Integrated,https://www.chevron.com
+MRK,Merck & Co. Inc.,Healthcare,United States,Drug Manufacturers—General,https://www.merck.com
+ABBV,AbbVie Inc.,Healthcare,United States,Drug Manufacturers—General,https://www.abbvie.com
+PEP,PepsiCo Inc.,Consumer Defensive,United States,Beverages—Non-Alcoholic,https://www.pepsico.com
+KO,Coca-Cola Co.,Consumer Defensive,United States,Beverages—Non-Alcoholic,https://www.coca-colacompany.com
+COST,Costco Wholesale Corporation,Consumer Defensive,United States,Discount Stores,https://www.costco.com
+AVGO,Broadcom Inc.,Technology,United States,Semiconductors,https://www.broadcom.com
+LLY,Eli Lilly and Company,Healthcare,United States,Drug Manufacturers—General,https://www.lilly.com
+WFC,Wells Fargo & Company,Financial Services,United States,Banks—Diversified,https://www.wellsfargo.com
+MCD,McDonald's Corporation,Consumer Cyclical,United States,Restaurants,https://www.mcdonalds.com
+CSCO,Cisco Systems Inc.,Technology,United States,Communication Equipment,https://www.cisco.com
+ACN,Accenture plc,Technology,Ireland,Information Technology Services,https://www.accenture.com
+ABT,Abbott Laboratories,Healthcare,United States,Medical Devices,https://www.abbott.com
+TMO,Thermo Fisher Scientific Inc.,Healthcare,United States,Diagnostics & Research,https://www.thermofisher.com
+DHR,Danaher Corporation,Healthcare,United States,Diagnostics & Research,https://www.danaher.com
+NEE,NextEra Energy Inc.,Utilities,United States,Utilities—Regulated Electric,https://www.nexteraenergy.com
+TXN,Texas Instruments Inc.,Technology,United States,Semiconductors,https://www.ti.com
+NKE,Nike Inc.,Consumer Cyclical,United States,Footwear & Accessories,https://www.nike.com
+BMY,Bristol-Myers Squibb Company,Healthcare,United States,Drug Manufacturers—General,https://www.bms.com
+PM,Philip Morris International Inc.,Consumer Defensive,United States,Tobacco,https://www.pmi.com
+UNP,Union Pacific Corporation,Industrials,United States,Railroads,https://www.up.com
+RTX,RTX Corporation,Industrials,United States,Aerospace & Defense,https://www.rtx.com
+HON,Honeywell International Inc.,Industrials,United States,Specialty Industrial Machinery,https://www.honeywell.com
+INTC,Intel Corporation,Technology,United States,Semiconductors,https://www.intel.com
+AMD,Advanced Micro Devices Inc.,Technology,United States,Semiconductors,https://www.amd.com
+UPS,United Parcel Service Inc.,Industrials,United States,Integrated Freight & Logistics,https://www.ups.com
+QCOM,QUALCOMM Inc.,Technology,United States,Semiconductors,https://www.qualcomm.com
+IBM,International Business Machines Corporation,Technology,United States,Information Technology Services,https://www.ibm.com
+AMGN,Amgen Inc.,Healthcare,United States,Biotechnology,https://www.amgen.com
+CAT,Caterpillar Inc.,Industrials,United States,Farm & Heavy Construction Machinery,https://www.cat.com
+GE,General Electric Company,Industrials,United States,Specialty Industrial Machinery,https://www.ge.com
+BA,The Boeing Company,Industrials,United States,Aerospace & Defense,https://www.boeing.com
+GS,The Goldman Sachs Group Inc.,Financial Services,United States,Capital Markets,https://www.goldmansachs.com
+AXP,American Express Company,Financial Services,United States,Credit Services,https://www.americanexpress.com
+BLK,BlackRock Inc.,Financial Services,United States,Asset Management,https://www.blackrock.com
+SBUX,Starbucks Corporation,Consumer Cyclical,United States,Restaurants,https://www.starbucks.com
+MDT,Medtronic plc,Healthcare,Ireland,Medical Devices,https://www.medtronic.com
+GILD,Gilead Sciences Inc.,Healthcare,United States,Biotechnology,https://www.gilead.com
+ADI,Analog Devices Inc.,Technology,United States,Semiconductors,https://www.analog.com
+ISRG,Intuitive Surgical Inc.,Healthcare,United States,Medical Instruments & Supplies,https://www.intuitive.com
+VZ,Verizon Communications Inc.,Communication Services,United States,Telecom Services,https://www.verizon.com
