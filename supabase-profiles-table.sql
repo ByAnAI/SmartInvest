@@ -29,12 +29,7 @@ create policy "Users can read own profile"
 -- 4) Admins can read ALL profiles (so the admin panel user list works)
 create policy "Admins can read all profiles"
   on public.profiles for select
-  using (
-    exists (
-      select 1 from public.profiles p
-      where p.uid = auth.uid() and p.role = 'admin'
-    )
-  );
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com');
 
 -- 5) Allow insert so new sign-ups can create their profile (app does this in initializeUser)
 create policy "Users can insert own profile"
@@ -49,17 +44,13 @@ create policy "Users can update own profile"
 
 create policy "Admins can update any profile"
   on public.profiles for update
-  using (
-    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
-  )
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com')
   with check (true);
 
 -- 7) Admins can delete any profile (for "remove user" in admin panel)
 create policy "Admins can delete any profile"
   on public.profiles for delete
-  using (
-    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
-  );
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com');
 
 -- 8) Optional: trigger to create a profile when a new user signs up (so they appear in the list immediately)
 create or replace function public.handle_new_user()

@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset, DailyWatchlist, CompanyFundamental } from "../types";
+import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset, DailyWatchlist, DailyWatchlistItem, CompanyFundamental } from "../types";
 
 // --- USER MANAGEMENT ---
 
@@ -289,12 +289,20 @@ export const getAllMarketAssets = async (): Promise<MarketAsset[]> => {
 
 const todayDateString = () => new Date().toISOString().slice(0, 10);
 
+export const buildWatchlistLabel = (watchlistDate: string, createdAt?: string): string => {
+    const datePart = watchlistDate || todayDateString();
+    const ts = createdAt ? new Date(createdAt) : new Date();
+    const hh = Number.isNaN(ts.getTime()) ? '00' : String(ts.getHours()).padStart(2, '0');
+    const mm = Number.isNaN(ts.getTime()) ? '00' : String(ts.getMinutes()).padStart(2, '0');
+    return `WatchList-of-${datePart}@${hh}:${mm}`;
+};
+
 export const getDailyWatchlist = async (): Promise<DailyWatchlist | null> => {
-    const today = todayDateString();
     const { data, error } = await supabase
         .from('daily_watchlist')
         .select('*')
-        .eq('watchlist_date', today)
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle();
 
     if (error) {
@@ -308,25 +316,231 @@ export const getDailyWatchlist = async (): Promise<DailyWatchlist | null> => {
         symbols: Array.isArray(data.symbols) ? data.symbols : [],
         created_by: data.created_by,
         created_at: data.created_at,
+        label: buildWatchlistLabel(data.watchlist_date, data.created_at),
     };
 };
 
-export const createOrUpdateDailyWatchlist = async (createdByUid: string, symbols: string[]): Promise<void> => {
-    const today = todayDateString();
-    const normalized = symbols.map(s => String(s).toUpperCase().trim()).filter(Boolean);
-    const { error } = await supabase
+export const getAllDailyWatchlists = async (): Promise<DailyWatchlist[]> => {
+    const { data, error } = await supabase
         .from('daily_watchlist')
-        .upsert(
-            {
-                watchlist_date: today,
-                symbols: normalized,
-                created_by: createdByUid,
-                created_at: new Date().toISOString(),
-            },
-            { onConflict: 'watchlist_date' }
-        );
+        .select('*')
+        .order('watchlist_date', { ascending: false })
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        console.warn("Could not fetch all daily watchlists", error);
+        return [];
+    }
+
+    const rows = Array.isArray(data) ? data : [];
+    return rows.map((r: any) => ({
+        id: r.id,
+        watchlist_date: r.watchlist_date,
+        symbols: Array.isArray(r.symbols) ? r.symbols : [],
+        created_by: r.created_by,
+        created_at: r.created_at,
+        label: buildWatchlistLabel(r.watchlist_date, r.created_at),
+    }));
+};
+
+export const getDailyWatchlistItems = async (watchlistId: string, watchlistDate?: string): Promise<DailyWatchlistItem[]> => {
+    const id = (watchlistId || '').trim();
+    const date = (watchlistDate || '').trim();
+    if (!id && !date) return [];
+    let rows: any[] = [];
+    if (id) {
+        const { data, error } = await supabase
+            .from('daily_watchlist_items')
+            .select('*')
+            .eq('watchlist_id', id)
+            .order('symbol', { ascending: true });
+        if (error) {
+            console.warn("Could not fetch daily watchlist items by watchlist_id", error);
+        } else {
+            rows = data || [];
+        }
+    }
+    // Legacy fallback for old snapshots keyed only by date.
+    if (rows.length === 0 && date) {
+        const { data, error } = await supabase
+            .from('daily_watchlist_items')
+            .select('*')
+            .eq('watchlist_date', date)
+            .order('symbol', { ascending: true });
+        if (error) {
+            console.warn("Could not fetch daily watchlist items by watchlist_date", error);
+            return [];
+        }
+        rows = data || [];
+    }
+    return rows.map((r: any) => ({
+        watchlist_id: r.watchlist_id ?? undefined,
+        watchlist_date: r.watchlist_date,
+        symbol: r.symbol,
+        company: r.company ?? '',
+        sector: r.sector ?? '',
+        industry: r.industry ?? '',
+        location: r.location ?? '',
+        current_price: r.current_price != null ? Number(r.current_price) : null,
+        total_assets: r.total_assets != null ? Number(r.total_assets) : null,
+        total_liabilities: r.total_liabilities != null ? Number(r.total_liabilities) : null,
+        total_revenue: r.total_revenue != null ? Number(r.total_revenue) : null,
+        net_income: r.net_income != null ? Number(r.net_income) : null,
+        operating_cash_flow: r.operating_cash_flow != null ? Number(r.operating_cash_flow) : null,
+        free_cash_flow: r.free_cash_flow != null ? Number(r.free_cash_flow) : null,
+        iv_dcf: r.iv_dcf != null ? Number(r.iv_dcf) : null,
+        iv_ri: r.iv_ri != null ? Number(r.iv_ri) : null,
+        iv_multiples: r.iv_multiples != null ? Number(r.iv_multiples) : null,
+        iv_quality_score: r.iv_quality_score != null ? Number(r.iv_quality_score) : null,
+        iv_ensemble: r.iv_ensemble != null ? Number(r.iv_ensemble) : null,
+        iv_upside_pct: r.iv_upside_pct != null ? Number(r.iv_upside_pct) : null,
+        torchlight_score: r.torchlight_score != null ? Number(r.torchlight_score) : null,
+        torchlight_rank_factors: r.torchlight_rank_factors ?? '',
+        torchlight_momentum: r.torchlight_momentum != null ? Number(r.torchlight_momentum) : null,
+        torchlight_valuation_edge: r.torchlight_valuation_edge != null ? Number(r.torchlight_valuation_edge) : null,
+        torchlight_quality: r.torchlight_quality != null ? Number(r.torchlight_quality) : null,
+        torchlight_growth: r.torchlight_growth != null ? Number(r.torchlight_growth) : null,
+        torchlight_sentiment: r.torchlight_sentiment != null ? Number(r.torchlight_sentiment) : null,
+        torchlight_macro_fit: r.torchlight_macro_fit != null ? Number(r.torchlight_macro_fit) : null,
+        torchlight_execution_feasibility: r.torchlight_execution_feasibility != null ? Number(r.torchlight_execution_feasibility) : null,
+        torchlight_risk_adjusted_alpha: r.torchlight_risk_adjusted_alpha != null ? Number(r.torchlight_risk_adjusted_alpha) : null,
+        torchlight_capital_efficiency: r.torchlight_capital_efficiency != null ? Number(r.torchlight_capital_efficiency) : null,
+        torchlight_analyst_drift: r.torchlight_analyst_drift != null ? Number(r.torchlight_analyst_drift) : null,
+        ctr_total_return: r.ctr_total_return != null ? Number(r.ctr_total_return) : null,
+        ctr_price_return: r.ctr_price_return != null ? Number(r.ctr_price_return) : null,
+        ctr_cash_return: r.ctr_cash_return != null ? Number(r.ctr_cash_return) : null,
+        ctr_annualized: r.ctr_annualized != null ? Number(r.ctr_annualized) : null,
+        torchlight_ctr_score: r.torchlight_ctr_score != null ? Number(r.torchlight_ctr_score) : null,
+        risk_daily_return_mean: r.risk_daily_return_mean != null ? Number(r.risk_daily_return_mean) : null,
+        risk_volatility_daily: r.risk_volatility_daily != null ? Number(r.risk_volatility_daily) : null,
+        risk_volatility_annual: r.risk_volatility_annual != null ? Number(r.risk_volatility_annual) : null,
+        risk_sharpe: r.risk_sharpe != null ? Number(r.risk_sharpe) : null,
+        risk_sortino: r.risk_sortino != null ? Number(r.risk_sortino) : null,
+        risk_max_drawdown: r.risk_max_drawdown != null ? Number(r.risk_max_drawdown) : null,
+        risk_var_95_hist: r.risk_var_95_hist != null ? Number(r.risk_var_95_hist) : null,
+        risk_var_99_hist: r.risk_var_99_hist != null ? Number(r.risk_var_99_hist) : null,
+        risk_var_95_param: r.risk_var_95_param != null ? Number(r.risk_var_95_param) : null,
+        risk_var_99_param: r.risk_var_99_param != null ? Number(r.risk_var_99_param) : null,
+        risk_cvar_95: r.risk_cvar_95 != null ? Number(r.risk_cvar_95) : null,
+        risk_beta: r.risk_beta != null ? Number(r.risk_beta) : null,
+        risk_summary_score: r.risk_summary_score != null ? Number(r.risk_summary_score) : null,
+        created_at: r.created_at,
+    }));
+};
+
+export const getCompanyFundamentalsByTickers = async (tickers: string[]): Promise<Record<string, CompanyFundamental>> => {
+    const normalized = tickers.map((t) => String(t).trim().toUpperCase()).filter(Boolean);
+    if (normalized.length === 0) return {};
+    const { data, error } = await supabase
+        .from('company_fundamentals')
+        .select('ticker, company, sector, location, industry, website, updated_at')
+        .in('ticker', normalized);
+    if (error) {
+        console.warn("Could not fetch company fundamentals by tickers", error);
+        return {};
+    }
+    const out: Record<string, CompanyFundamental> = {};
+    (data || []).forEach((r: any) => {
+        out[r.ticker] = {
+            ticker: r.ticker,
+            company: r.company ?? '',
+            sector: r.sector ?? '',
+            location: r.location ?? '',
+            industry: r.industry ?? '',
+            website: r.website ?? '',
+            updated_at: r.updated_at,
+        };
+    });
+    return out;
+};
+
+export const createOrUpdateDailyWatchlist = async (
+    createdByUid: string,
+    symbols: string[],
+    createdAtIso?: string,
+    items?: DailyWatchlistItem[]
+): Promise<void> => {
+    const normalized = symbols.map(s => String(s).toUpperCase().trim()).filter(Boolean);
+    const createdAt = createdAtIso ?? new Date().toISOString();
+    const watchlistDate = createdAt.slice(0, 10);
+    const { data: inserted, error } = await supabase
+        .from('daily_watchlist')
+        .insert({
+            watchlist_date: watchlistDate,
+            symbols: normalized,
+            created_by: createdByUid,
+            created_at: createdAt,
+        })
+        .select('id, watchlist_date')
+        .single();
 
     if (error) throw new Error(error.message || 'Failed to save daily watchlist.');
+    if (!inserted?.id) throw new Error('Failed to get saved watchlist id.');
+
+    if (Array.isArray(items)) {
+        const payload = items
+            .map((r) => ({
+                watchlist_id: inserted.id,
+                watchlist_date: inserted.watchlist_date || watchlistDate,
+                symbol: String(r.symbol || '').toUpperCase().trim(),
+                company: (r.company || '').trim(),
+                sector: (r.sector || '').trim(),
+                industry: (r.industry || '').trim(),
+                location: (r.location || '').trim(),
+                current_price: r.current_price ?? null,
+                total_assets: r.total_assets ?? null,
+                total_liabilities: r.total_liabilities ?? null,
+                total_revenue: r.total_revenue ?? null,
+                net_income: r.net_income ?? null,
+                operating_cash_flow: r.operating_cash_flow ?? null,
+                free_cash_flow: r.free_cash_flow ?? null,
+                iv_dcf: r.iv_dcf ?? null,
+                iv_ri: r.iv_ri ?? null,
+                iv_multiples: r.iv_multiples ?? null,
+                iv_quality_score: r.iv_quality_score ?? null,
+                iv_ensemble: r.iv_ensemble ?? null,
+                iv_upside_pct: r.iv_upside_pct ?? null,
+                torchlight_score: r.torchlight_score ?? null,
+                torchlight_rank_factors: r.torchlight_rank_factors ?? null,
+                torchlight_momentum: r.torchlight_momentum ?? null,
+                torchlight_valuation_edge: r.torchlight_valuation_edge ?? null,
+                torchlight_quality: r.torchlight_quality ?? null,
+                torchlight_growth: r.torchlight_growth ?? null,
+                torchlight_sentiment: r.torchlight_sentiment ?? null,
+                torchlight_macro_fit: r.torchlight_macro_fit ?? null,
+                torchlight_execution_feasibility: r.torchlight_execution_feasibility ?? null,
+                torchlight_risk_adjusted_alpha: r.torchlight_risk_adjusted_alpha ?? null,
+                torchlight_capital_efficiency: r.torchlight_capital_efficiency ?? null,
+                torchlight_analyst_drift: r.torchlight_analyst_drift ?? null,
+                ctr_total_return: r.ctr_total_return ?? null,
+                ctr_price_return: r.ctr_price_return ?? null,
+                ctr_cash_return: r.ctr_cash_return ?? null,
+                ctr_annualized: r.ctr_annualized ?? null,
+                torchlight_ctr_score: r.torchlight_ctr_score ?? null,
+                risk_daily_return_mean: r.risk_daily_return_mean ?? null,
+                risk_volatility_daily: r.risk_volatility_daily ?? null,
+                risk_volatility_annual: r.risk_volatility_annual ?? null,
+                risk_sharpe: r.risk_sharpe ?? null,
+                risk_sortino: r.risk_sortino ?? null,
+                risk_max_drawdown: r.risk_max_drawdown ?? null,
+                risk_var_95_hist: r.risk_var_95_hist ?? null,
+                risk_var_99_hist: r.risk_var_99_hist ?? null,
+                risk_var_95_param: r.risk_var_95_param ?? null,
+                risk_var_99_param: r.risk_var_99_param ?? null,
+                risk_cvar_95: r.risk_cvar_95 ?? null,
+                risk_beta: r.risk_beta ?? null,
+                risk_summary_score: r.risk_summary_score ?? null,
+                created_at: createdAt,
+            }))
+            .filter((r) => r.symbol);
+
+        if (payload.length > 0) {
+            const { error: insErr } = await supabase
+                .from('daily_watchlist_items')
+                .upsert(payload, { onConflict: 'watchlist_id,symbol' });
+            if (insErr) throw new Error(insErr.message || 'Failed to save watchlist snapshot rows.');
+        }
+    }
 };
 
 // --- COMPANY FUNDAMENTALS (reference data; admin-only write) ---

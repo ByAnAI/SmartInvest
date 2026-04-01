@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { getPortfolio, addStock, removeStock, updateStock, clearPortfolio } from '../services/supabaseService';
+import { getPortfolio, addStock, removeStock, updateStock, clearPortfolio, getDailyWatchlist, getDailyWatchlistItems } from '../services/supabaseService';
 import { PortfolioItem } from '../types';
 import { supabase } from '../services/supabase';
 import { SP500_TICKERS } from './SP500Data';
@@ -50,6 +50,19 @@ interface PortfolioProps {
   userId?: string;
 }
 
+type LatestWatchlistMetric = {
+  symbol: string;
+  company?: string;
+  current_price?: number | null;
+  iv_ensemble?: number | null;
+  iv_upside_pct?: number | null;
+  risk_summary_score?: number | null;
+  torchlight_score?: number | null;
+  torchlight_sentiment?: number | null;
+};
+
+const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
+
 const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [marketPrices, setMarketPrices] = useState<Record<string, number>>({});
@@ -64,6 +77,9 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
   const [showDropdown, setShowDropdown] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<'EQUITIES' | 'COMMODITIES' | 'NASDAQ' | 'S&P' | 'CRYPTO' | 'FOREX' | 'ALL'>('EQUITIES');
   const [liveFxRates, setLiveFxRates] = useState<Record<string, number>>({});
+  const [latestWatchlistLabel, setLatestWatchlistLabel] = useState<string>('No watchlist snapshot available');
+  const [latestMetricsBySymbol, setLatestMetricsBySymbol] = useState<Record<string, LatestWatchlistMetric>>({});
+  const [healthLoading, setHealthLoading] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Manual Entry State
@@ -209,6 +225,45 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
   useEffect(() => { loadPortfolio(); }, [currentUid]);
 
   useEffect(() => {
+    const loadLatestWatchlistHealth = async () => {
+      setHealthLoading(true);
+      try {
+        const latest = await getDailyWatchlist();
+        if (!latest) {
+          setLatestWatchlistLabel('No watchlist snapshot available');
+          setLatestMetricsBySymbol({});
+          return;
+        }
+        const label = (latest as any).label || `WatchList-of-${latest.watchlist_date}`;
+        setLatestWatchlistLabel(label);
+        const rows = await getDailyWatchlistItems(latest.id, latest.watchlist_date);
+        const mapped: Record<string, LatestWatchlistMetric> = {};
+        (rows || []).forEach((r: any) => {
+          const t = String(r.symbol || '').toUpperCase();
+          if (!t) return;
+          mapped[t] = {
+            symbol: t,
+            company: r.company || '',
+            current_price: r.current_price ?? null,
+            iv_ensemble: r.iv_ensemble ?? null,
+            iv_upside_pct: r.iv_upside_pct ?? null,
+            risk_summary_score: r.risk_summary_score ?? null,
+            torchlight_score: r.torchlight_score ?? null,
+            torchlight_sentiment: r.torchlight_sentiment ?? null,
+          };
+        });
+        setLatestMetricsBySymbol(mapped);
+      } catch {
+        setLatestWatchlistLabel('Could not load latest watchlist snapshot');
+        setLatestMetricsBySymbol({});
+      } finally {
+        setHealthLoading(false);
+      }
+    };
+    loadLatestWatchlistHealth();
+  }, []);
+
+  useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowDropdown(false);
@@ -341,6 +396,74 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
   const totalValuation = items.reduce((acc, i) => acc + (i.shares * (marketPrices[i.symbol] || i.avgCost)), 0);
   const totalCost = items.reduce((acc, i) => acc + (i.shares * i.avgCost), 0);
 
+  const portfolioHealth = useMemo(() => {
+    const rows = items.map((item) => {
+      const ticker = item.symbol.toUpperCase();
+      const livePrice = marketPrices[item.symbol] || item.avgCost;
+      const value = item.shares * livePrice;
+      const snapshot = latestMetricsBySymbol[ticker];
+      const ivEnsemble = snapshot?.iv_ensemble ?? null;
+      const ivUpsidePct = snapshot?.iv_upside_pct ?? null;
+      const sentimentScore = snapshot?.torchlight_sentiment ?? null;
+      const riskSummary = snapshot?.risk_summary_score ?? null;
+      const sentimentAdjPct = sentimentScore != null ? (sentimentScore - 50) * 0.12 : 0; // +/-6% max
+      const riskDamp = riskSummary != null && riskSummary < 50 ? 0.7 : 1;
+      // Base 3M what-if return combines valuation gap + current sentiment impact.
+      const base3mPct = clamp((((ivUpsidePct ?? 0) * 0.25) + sentimentAdjPct) * riskDamp, -30, 30);
+      const downPct = clamp(base3mPct - 6, -40, 40);
+      const samePct = clamp(base3mPct, -40, 40);
+      const upPct = clamp(base3mPct + 6, -40, 40);
+      const priceDown = livePrice * (1 + downPct / 100);
+      const priceSame = livePrice * (1 + samePct / 100);
+      const priceUp = livePrice * (1 + upPct / 100);
+      const direction = samePct > 2 ? 'Go Up' : samePct < -2 ? 'Go Down' : 'Stay Same';
+      const sentimentImpact = sentimentScore == null
+        ? 'Unknown'
+        : sentimentScore >= 60
+          ? 'Positive'
+          : sentimentScore <= 40
+            ? 'Negative'
+            : 'Neutral';
+      return {
+        ticker,
+        company: snapshot?.company || '',
+        livePrice,
+        value,
+        ivEnsemble,
+        ivUpsidePct,
+        priceDown,
+        priceSame,
+        priceUp,
+        direction,
+        sentimentScore,
+        sentimentImpact,
+        riskSummary,
+        torchlight: snapshot?.torchlight_score ?? null,
+      };
+    });
+
+    const covered = rows.filter((r) => r.ivEnsemble != null || r.riskSummary != null || r.torchlight != null);
+    const total = rows.reduce((a, b) => a + b.value, 0);
+    const weighted = (getter: (r: typeof rows[number]) => number | null) =>
+      rows.reduce((acc, r) => {
+        const w = total > 0 ? r.value / total : 0;
+        const v = getter(r);
+        return acc + (v != null ? w * v : 0);
+      }, 0);
+
+    const weightedRisk = weighted((r) => r.riskSummary);
+    const weightedTorch = weighted((r) => r.torchlight);
+    const weightedIvUpside = weighted((r) => r.ivUpsidePct);
+    const coveragePct = rows.length ? (covered.length / rows.length) * 100 : 0;
+    return {
+      rows,
+      weightedRisk,
+      weightedTorch,
+      weightedIvUpside,
+      coveragePct,
+    };
+  }, [items, marketPrices, latestMetricsBySymbol]);
+
   if (loading) return (
     <div className="flex flex-col items-center justify-center py-40 animate-pulse">
       <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4"></div>
@@ -452,6 +575,83 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
           <p className={`text-4xl font-black tracking-tighter transition-all duration-1000 ${totalValuation >= totalCost ? 'text-emerald-500' : 'text-rose-500'}`}>
             {totalValuation >= totalCost ? '+' : '-'}${Math.abs(totalValuation - totalCost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
+        </div>
+      </div>
+
+      <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
+          <div>
+            <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Portfolio Health & 3M What-If Scenarios</h3>
+            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-1">
+              Source: {latestWatchlistLabel}
+            </p>
+          </div>
+          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+            Coverage {portfolioHealth.coveragePct.toFixed(0)}%
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+          <div className="border border-slate-100 rounded-xl p-3">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Weighted Risk Summary</p>
+            <p className="text-2xl font-black text-slate-800">{portfolioHealth.weightedRisk.toFixed(1)}</p>
+          </div>
+          <div className="border border-slate-100 rounded-xl p-3">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Weighted Torchlight</p>
+            <p className="text-2xl font-black text-indigo-700">{portfolioHealth.weightedTorch.toFixed(1)}</p>
+          </div>
+          <div className="border border-slate-100 rounded-xl p-3">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Weighted IV Upside</p>
+            <p className={`text-2xl font-black ${portfolioHealth.weightedIvUpside >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+              {portfolioHealth.weightedIvUpside.toFixed(2)}%
+            </p>
+          </div>
+        </div>
+        <div className="overflow-x-auto border border-slate-100 rounded-xl">
+          <table className="w-full text-xs min-w-[980px]">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="px-3 py-2 text-left font-black text-slate-500 uppercase">Ticker</th>
+                <th className="px-3 py-2 text-left font-black text-slate-500 uppercase">Company</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Live Price</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">IV (Latest)</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">IV Upside</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">3M What-If (Down)</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">3M What-If (Same)</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">3M What-If (Up)</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Likely Path</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Sentiment Impact</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Risk Summary</th>
+              </tr>
+            </thead>
+            <tbody>
+              {portfolioHealth.rows.map((r) => (
+                <tr key={r.ticker} className="border-t border-slate-100">
+                  <td className="px-3 py-2 font-black text-slate-800">{r.ticker}</td>
+                  <td className="px-3 py-2 text-slate-600">{r.company || '—'}</td>
+                  <td className="px-3 py-2 text-right font-mono">${r.livePrice.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-mono">{r.ivEnsemble != null ? `$${r.ivEnsemble.toFixed(2)}` : '—'}</td>
+                  <td className={`px-3 py-2 text-right font-mono font-bold ${(r.ivUpsidePct ?? 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {r.ivUpsidePct != null ? `${r.ivUpsidePct.toFixed(2)}%` : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">{Number.isFinite(r.priceDown) ? `$${r.priceDown.toFixed(2)}` : '—'}</td>
+                  <td className="px-3 py-2 text-right font-mono">{Number.isFinite(r.priceSame) ? `$${r.priceSame.toFixed(2)}` : '—'}</td>
+                  <td className="px-3 py-2 text-right font-mono">{Number.isFinite(r.priceUp) ? `$${r.priceUp.toFixed(2)}` : '—'}</td>
+                  <td className={`px-3 py-2 text-right font-black ${r.direction === 'Go Up' ? 'text-emerald-600' : r.direction === 'Go Down' ? 'text-rose-600' : 'text-amber-600'}`}>
+                    {r.direction}
+                  </td>
+                  <td className={`px-3 py-2 text-right font-black ${r.sentimentImpact === 'Positive' ? 'text-emerald-600' : r.sentimentImpact === 'Negative' ? 'text-rose-600' : 'text-amber-600'}`}>
+                    {r.sentimentImpact}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">{r.riskSummary != null ? r.riskSummary.toFixed(1) : '—'}</td>
+                </tr>
+              ))}
+              {!healthLoading && portfolioHealth.rows.length === 0 && (
+                <tr>
+                  <td colSpan={11} className="px-3 py-6 text-center text-slate-400 font-medium">No portfolio holdings.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -13,8 +13,9 @@ import {
   upsertCompanyFundamentals,
   updateCompanyFundamental,
   deleteCompanyFundamental,
+  buildWatchlistLabel,
 } from '../services/supabaseService';
-import { UserMetadata, CompanyFundamental } from '../types';
+import { UserMetadata, CompanyFundamental, DailyWatchlistItem } from '../types';
 import { supabase } from '../services/supabase';
 import * as XLSX from 'xlsx';
 
@@ -76,13 +77,14 @@ const AdminDashboard: React.FC = () => {
   const [creatingWatchlist, setCreatingWatchlist] = useState(false);
   const [dailyWatchlistSymbols, setDailyWatchlistSymbols] = useState('');
   const [todayWatchlist, setTodayWatchlist] = useState<string[]>([]);
+  const [todayWatchlistLabel, setTodayWatchlistLabel] = useState<string>('');
   const [dailyWatchlistTableMissing, setDailyWatchlistTableMissing] = useState(false);
 
   // Create short list from company list (SP500 via FastAPI) and save to daily watchlist
   const [watchlistApiUrl, setWatchlistApiUrl] = useState(
     () => (import.meta.env.VITE_WATCHLIST_API_URL || 'http://localhost:8000').replace(/\/$/, '')
   );
-  const [shortListLimit, setShortListLimit] = useState(100);
+  const [shortListLimit, setShortListLimit] = useState(600);
   const [loadedShortList, setLoadedShortList] = useState<{
     ticker: string;
     company?: string;
@@ -95,6 +97,29 @@ const AdminDashboard: React.FC = () => {
     net_income?: number | null;
     operating_cash_flow?: number | null;
     free_cash_flow?: number | null;
+    iv_dcf?: number | null;
+    iv_ri?: number | null;
+    iv_multiples?: number | null;
+    iv_quality_score?: number | null;
+    iv_ensemble?: number | null;
+    iv_upside_pct?: number | null;
+    torchlight_score?: number | null;
+    torchlight_rank_factors?: string;
+    ctr_total_return?: number | null;
+    ctr_annualized?: number | null;
+    risk_daily_return_mean?: number | null;
+    risk_volatility_daily?: number | null;
+    risk_volatility_annual?: number | null;
+    risk_sharpe?: number | null;
+    risk_sortino?: number | null;
+    risk_max_drawdown?: number | null;
+    risk_var_95_hist?: number | null;
+    risk_var_99_hist?: number | null;
+    risk_var_95_param?: number | null;
+    risk_var_99_param?: number | null;
+    risk_cvar_95?: number | null;
+    risk_beta?: number | null;
+    risk_summary_score?: number | null;
   }[]>([]);
   const [loadingShortList, setLoadingShortList] = useState(false);
   const [loadingYahooData, setLoadingYahooData] = useState(false);
@@ -163,7 +188,10 @@ const AdminDashboard: React.FC = () => {
       }
       setDailyWatchlistTableMissing(false);
       const w = await getDailyWatchlist();
-      if (w) setTodayWatchlist(w.symbols);
+      if (w) {
+        setTodayWatchlist(w.symbols);
+        setTodayWatchlistLabel(w.label || buildWatchlistLabel(w.watchlist_date, w.created_at));
+      }
     };
     loadTodayWatchlist();
   }, [creatingWatchlist]);
@@ -351,9 +379,11 @@ const AdminDashboard: React.FC = () => {
     }
     setCreatingWatchlist(true);
     setError(null);
+    const startedAtIso = new Date().toISOString();
     try {
-      await createOrUpdateDailyWatchlist(currentUser.id, symbols);
+      await createOrUpdateDailyWatchlist(currentUser.id, symbols, startedAtIso);
       setTodayWatchlist(symbols.map(s => s.toUpperCase()));
+      setTodayWatchlistLabel(buildWatchlistLabel(startedAtIso.slice(0, 10), startedAtIso));
       setDailyWatchlistSymbols('');
       showFeedback("Today's watchlist saved. All users can see it on the Dashboard.");
     } catch (err: unknown) {
@@ -502,6 +532,14 @@ const AdminDashboard: React.FC = () => {
         total_assets?: number | null; total_liabilities?: number | null;
         total_revenue?: number | null; net_income?: number | null;
         operating_cash_flow?: number | null; free_cash_flow?: number | null;
+        iv_dcf?: number | null; iv_ri?: number | null; iv_multiples?: number | null;
+        iv_quality_score?: number | null; iv_ensemble?: number | null; iv_upside_pct?: number | null;
+        torchlight_score?: number | null; torchlight_rank_factors?: string;
+        ctr_total_return?: number | null; ctr_annualized?: number | null;
+        risk_daily_return_mean?: number | null; risk_volatility_daily?: number | null; risk_volatility_annual?: number | null;
+        risk_sharpe?: number | null; risk_sortino?: number | null; risk_max_drawdown?: number | null;
+        risk_var_95_hist?: number | null; risk_var_99_hist?: number | null; risk_var_95_param?: number | null; risk_var_99_param?: number | null;
+        risk_cvar_95?: number | null; risk_beta?: number | null; risk_summary_score?: number | null;
       }> = {};
       (data || []).forEach((r: Record<string, unknown>) => {
         const t = String(r.ticker || '').toUpperCase();
@@ -516,6 +554,29 @@ const AdminDashboard: React.FC = () => {
           net_income: r.net_income != null ? Number(r.net_income) : null,
           operating_cash_flow: r.operating_cash_flow != null ? Number(r.operating_cash_flow) : null,
           free_cash_flow: r.free_cash_flow != null ? Number(r.free_cash_flow) : null,
+          iv_dcf: r.iv_dcf != null ? Number(r.iv_dcf) : null,
+          iv_ri: r.iv_ri != null ? Number(r.iv_ri) : null,
+          iv_multiples: r.iv_multiples != null ? Number(r.iv_multiples) : null,
+          iv_quality_score: r.iv_quality_score != null ? Number(r.iv_quality_score) : null,
+          iv_ensemble: r.iv_ensemble != null ? Number(r.iv_ensemble) : null,
+          iv_upside_pct: r.iv_upside_pct != null ? Number(r.iv_upside_pct) : null,
+          torchlight_score: r.torchlight_score != null ? Number(r.torchlight_score) : null,
+          torchlight_rank_factors: typeof r.torchlight_rank_factors === 'string' ? r.torchlight_rank_factors : '',
+          ctr_total_return: r.ctr_total_return != null ? Number(r.ctr_total_return) : null,
+          ctr_annualized: r.ctr_annualized != null ? Number(r.ctr_annualized) : null,
+          risk_daily_return_mean: r.risk_daily_return_mean != null ? Number(r.risk_daily_return_mean) : null,
+          risk_volatility_daily: r.risk_volatility_daily != null ? Number(r.risk_volatility_daily) : null,
+          risk_volatility_annual: r.risk_volatility_annual != null ? Number(r.risk_volatility_annual) : null,
+          risk_sharpe: r.risk_sharpe != null ? Number(r.risk_sharpe) : null,
+          risk_sortino: r.risk_sortino != null ? Number(r.risk_sortino) : null,
+          risk_max_drawdown: r.risk_max_drawdown != null ? Number(r.risk_max_drawdown) : null,
+          risk_var_95_hist: r.risk_var_95_hist != null ? Number(r.risk_var_95_hist) : null,
+          risk_var_99_hist: r.risk_var_99_hist != null ? Number(r.risk_var_99_hist) : null,
+          risk_var_95_param: r.risk_var_95_param != null ? Number(r.risk_var_95_param) : null,
+          risk_var_99_param: r.risk_var_99_param != null ? Number(r.risk_var_99_param) : null,
+          risk_cvar_95: r.risk_cvar_95 != null ? Number(r.risk_cvar_95) : null,
+          risk_beta: r.risk_beta != null ? Number(r.risk_beta) : null,
+          risk_summary_score: r.risk_summary_score != null ? Number(r.risk_summary_score) : null,
         };
       });
       setLoadedShortList((prev) =>
@@ -532,6 +593,29 @@ const AdminDashboard: React.FC = () => {
             net_income: b?.net_income,
             operating_cash_flow: b?.operating_cash_flow,
             free_cash_flow: b?.free_cash_flow,
+            iv_dcf: b?.iv_dcf,
+            iv_ri: b?.iv_ri,
+            iv_multiples: b?.iv_multiples,
+            iv_quality_score: b?.iv_quality_score,
+            iv_ensemble: b?.iv_ensemble,
+            iv_upside_pct: b?.iv_upside_pct,
+            torchlight_score: b?.torchlight_score,
+            torchlight_rank_factors: b?.torchlight_rank_factors,
+            ctr_total_return: b?.ctr_total_return,
+            ctr_annualized: b?.ctr_annualized,
+            risk_daily_return_mean: b?.risk_daily_return_mean,
+            risk_volatility_daily: b?.risk_volatility_daily,
+            risk_volatility_annual: b?.risk_volatility_annual,
+            risk_sharpe: b?.risk_sharpe,
+            risk_sortino: b?.risk_sortino,
+            risk_max_drawdown: b?.risk_max_drawdown,
+            risk_var_95_hist: b?.risk_var_95_hist,
+            risk_var_99_hist: b?.risk_var_99_hist,
+            risk_var_95_param: b?.risk_var_95_param,
+            risk_var_99_param: b?.risk_var_99_param,
+            risk_cvar_95: b?.risk_cvar_95,
+            risk_beta: b?.risk_beta,
+            risk_summary_score: b?.risk_summary_score,
           };
         })
       );
@@ -552,6 +636,7 @@ const AdminDashboard: React.FC = () => {
   const createWatchlistOfToday = async () => {
     setCreatingWatchlistOfToday(true);
     setError(null);
+    const startedAtIso = new Date().toISOString();
     try {
       const res = await fetch(`${watchlistApiUrl}/api/lists/sp500?limit=${shortListLimit}`);
       if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -567,6 +652,11 @@ const AdminDashboard: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tickers: list.map((r) => r.ticker) }),
       });
+      let snapshotItems: DailyWatchlistItem[] = list.map((r) => ({
+        watchlist_date: startedAtIso.slice(0, 10),
+        symbol: r.ticker,
+        company: r.company || '',
+      }));
       if (res2.ok) {
         const yahooData = await res2.json();
         const byTicker: Record<string, {
@@ -574,6 +664,14 @@ const AdminDashboard: React.FC = () => {
           total_assets?: number | null; total_liabilities?: number | null;
           total_revenue?: number | null; net_income?: number | null;
           operating_cash_flow?: number | null; free_cash_flow?: number | null;
+          iv_dcf?: number | null; iv_ri?: number | null; iv_multiples?: number | null;
+          iv_quality_score?: number | null; iv_ensemble?: number | null; iv_upside_pct?: number | null;
+          torchlight_score?: number | null; torchlight_rank_factors?: string;
+          ctr_total_return?: number | null; ctr_annualized?: number | null;
+          risk_daily_return_mean?: number | null; risk_volatility_daily?: number | null; risk_volatility_annual?: number | null;
+          risk_sharpe?: number | null; risk_sortino?: number | null; risk_max_drawdown?: number | null;
+          risk_var_95_hist?: number | null; risk_var_99_hist?: number | null; risk_var_95_param?: number | null; risk_var_99_param?: number | null;
+          risk_cvar_95?: number | null; risk_beta?: number | null; risk_summary_score?: number | null;
         }> = {};
         (yahooData || []).forEach((r: Record<string, unknown>) => {
           const t = String(r.ticker || '').toUpperCase();
@@ -588,6 +686,29 @@ const AdminDashboard: React.FC = () => {
             net_income: r.net_income != null ? Number(r.net_income) : null,
             operating_cash_flow: r.operating_cash_flow != null ? Number(r.operating_cash_flow) : null,
             free_cash_flow: r.free_cash_flow != null ? Number(r.free_cash_flow) : null,
+            iv_dcf: r.iv_dcf != null ? Number(r.iv_dcf) : null,
+            iv_ri: r.iv_ri != null ? Number(r.iv_ri) : null,
+            iv_multiples: r.iv_multiples != null ? Number(r.iv_multiples) : null,
+            iv_quality_score: r.iv_quality_score != null ? Number(r.iv_quality_score) : null,
+            iv_ensemble: r.iv_ensemble != null ? Number(r.iv_ensemble) : null,
+            iv_upside_pct: r.iv_upside_pct != null ? Number(r.iv_upside_pct) : null,
+            torchlight_score: r.torchlight_score != null ? Number(r.torchlight_score) : null,
+            torchlight_rank_factors: typeof r.torchlight_rank_factors === 'string' ? r.torchlight_rank_factors : '',
+            ctr_total_return: r.ctr_total_return != null ? Number(r.ctr_total_return) : null,
+            ctr_annualized: r.ctr_annualized != null ? Number(r.ctr_annualized) : null,
+            risk_daily_return_mean: r.risk_daily_return_mean != null ? Number(r.risk_daily_return_mean) : null,
+            risk_volatility_daily: r.risk_volatility_daily != null ? Number(r.risk_volatility_daily) : null,
+            risk_volatility_annual: r.risk_volatility_annual != null ? Number(r.risk_volatility_annual) : null,
+            risk_sharpe: r.risk_sharpe != null ? Number(r.risk_sharpe) : null,
+            risk_sortino: r.risk_sortino != null ? Number(r.risk_sortino) : null,
+            risk_max_drawdown: r.risk_max_drawdown != null ? Number(r.risk_max_drawdown) : null,
+            risk_var_95_hist: r.risk_var_95_hist != null ? Number(r.risk_var_95_hist) : null,
+            risk_var_99_hist: r.risk_var_99_hist != null ? Number(r.risk_var_99_hist) : null,
+            risk_var_95_param: r.risk_var_95_param != null ? Number(r.risk_var_95_param) : null,
+            risk_var_99_param: r.risk_var_99_param != null ? Number(r.risk_var_99_param) : null,
+            risk_cvar_95: r.risk_cvar_95 != null ? Number(r.risk_cvar_95) : null,
+            risk_beta: r.risk_beta != null ? Number(r.risk_beta) : null,
+            risk_summary_score: r.risk_summary_score != null ? Number(r.risk_summary_score) : null,
           };
         });
         setLoadedShortList((prev) =>
@@ -604,14 +725,77 @@ const AdminDashboard: React.FC = () => {
               net_income: b?.net_income,
               operating_cash_flow: b?.operating_cash_flow,
               free_cash_flow: b?.free_cash_flow,
+              iv_dcf: b?.iv_dcf,
+              iv_ri: b?.iv_ri,
+              iv_multiples: b?.iv_multiples,
+              iv_quality_score: b?.iv_quality_score,
+              iv_ensemble: b?.iv_ensemble,
+              iv_upside_pct: b?.iv_upside_pct,
+              torchlight_score: b?.torchlight_score,
+              torchlight_rank_factors: b?.torchlight_rank_factors,
+              ctr_total_return: b?.ctr_total_return,
+              ctr_annualized: b?.ctr_annualized,
+              risk_daily_return_mean: b?.risk_daily_return_mean,
+              risk_volatility_daily: b?.risk_volatility_daily,
+              risk_volatility_annual: b?.risk_volatility_annual,
+              risk_sharpe: b?.risk_sharpe,
+              risk_sortino: b?.risk_sortino,
+              risk_max_drawdown: b?.risk_max_drawdown,
+              risk_var_95_hist: b?.risk_var_95_hist,
+              risk_var_99_hist: b?.risk_var_99_hist,
+              risk_var_95_param: b?.risk_var_95_param,
+              risk_var_99_param: b?.risk_var_99_param,
+              risk_cvar_95: b?.risk_cvar_95,
+              risk_beta: b?.risk_beta,
+              risk_summary_score: b?.risk_summary_score,
             };
           })
         );
+        snapshotItems = list.map((r) => {
+          const b = byTicker[r.ticker] || {};
+          return {
+            watchlist_date: startedAtIso.slice(0, 10),
+            symbol: r.ticker,
+            company: r.company || b.short_name || '',
+            sector: b.sector || '',
+            current_price: b.current_price ?? null,
+            total_assets: b.total_assets ?? null,
+            total_liabilities: b.total_liabilities ?? null,
+            total_revenue: b.total_revenue ?? null,
+            net_income: b.net_income ?? null,
+            operating_cash_flow: b.operating_cash_flow ?? null,
+            free_cash_flow: b.free_cash_flow ?? null,
+            iv_dcf: b.iv_dcf ?? null,
+            iv_ri: b.iv_ri ?? null,
+            iv_multiples: b.iv_multiples ?? null,
+            iv_quality_score: b.iv_quality_score ?? null,
+            iv_ensemble: b.iv_ensemble ?? null,
+            iv_upside_pct: b.iv_upside_pct ?? null,
+            torchlight_score: b.torchlight_score ?? null,
+            torchlight_rank_factors: b.torchlight_rank_factors ?? 'W1..W8 equal',
+            ctr_total_return: b.ctr_total_return ?? null,
+            ctr_annualized: b.ctr_annualized ?? null,
+            risk_daily_return_mean: b.risk_daily_return_mean ?? null,
+            risk_volatility_daily: b.risk_volatility_daily ?? null,
+            risk_volatility_annual: b.risk_volatility_annual ?? null,
+            risk_sharpe: b.risk_sharpe ?? null,
+            risk_sortino: b.risk_sortino ?? null,
+            risk_max_drawdown: b.risk_max_drawdown ?? null,
+            risk_var_95_hist: b.risk_var_95_hist ?? null,
+            risk_var_99_hist: b.risk_var_99_hist ?? null,
+            risk_var_95_param: b.risk_var_95_param ?? null,
+            risk_var_99_param: b.risk_var_99_param ?? null,
+            risk_cvar_95: b.risk_cvar_95 ?? null,
+            risk_beta: b.risk_beta ?? null,
+            risk_summary_score: b.risk_summary_score ?? null,
+          };
+        });
       }
       if (!currentUser?.id) throw new Error('Not logged in.');
       const symbols = list.map((r) => r.ticker).filter(Boolean);
-      await createOrUpdateDailyWatchlist(currentUser.id, symbols);
+      await createOrUpdateDailyWatchlist(currentUser.id, symbols, startedAtIso, snapshotItems);
       setTodayWatchlist(symbols.map((s) => s.toUpperCase()));
+      setTodayWatchlistLabel(buildWatchlistLabel(startedAtIso.slice(0, 10), startedAtIso));
       showFeedback(`Created today's watchlist: ${symbols.length} companies (with Yahoo data). Saved for ${new Date().toISOString().slice(0, 10)}.`);
     } catch (err: unknown) {
       const msg = getErrorMessage(err);
@@ -630,10 +814,48 @@ const AdminDashboard: React.FC = () => {
     if (loadedShortList.length === 0 || !currentUser?.id) return;
     setSavingShortListToDaily(true);
     setError(null);
+    const startedAtIso = new Date().toISOString();
     try {
       const symbols = loadedShortList.map((r) => r.ticker).filter(Boolean);
-      await createOrUpdateDailyWatchlist(currentUser.id, symbols);
+      const snapshotItems: DailyWatchlistItem[] = loadedShortList.map((r) => ({
+        watchlist_date: startedAtIso.slice(0, 10),
+        symbol: r.ticker,
+        company: r.short_name || r.company || '',
+        sector: r.sector || '',
+        current_price: r.current_price ?? null,
+        total_assets: r.total_assets ?? null,
+        total_liabilities: r.total_liabilities ?? null,
+        total_revenue: r.total_revenue ?? null,
+        net_income: r.net_income ?? null,
+        operating_cash_flow: r.operating_cash_flow ?? null,
+        free_cash_flow: r.free_cash_flow ?? null,
+        iv_dcf: r.iv_dcf ?? null,
+        iv_ri: r.iv_ri ?? null,
+        iv_multiples: r.iv_multiples ?? null,
+        iv_quality_score: r.iv_quality_score ?? null,
+        iv_ensemble: r.iv_ensemble ?? null,
+        iv_upside_pct: r.iv_upside_pct ?? null,
+        torchlight_score: r.torchlight_score ?? null,
+        torchlight_rank_factors: r.torchlight_rank_factors ?? 'W1..W8 equal',
+        ctr_total_return: r.ctr_total_return ?? null,
+        ctr_annualized: r.ctr_annualized ?? null,
+        risk_daily_return_mean: r.risk_daily_return_mean ?? null,
+        risk_volatility_daily: r.risk_volatility_daily ?? null,
+        risk_volatility_annual: r.risk_volatility_annual ?? null,
+        risk_sharpe: r.risk_sharpe ?? null,
+        risk_sortino: r.risk_sortino ?? null,
+        risk_max_drawdown: r.risk_max_drawdown ?? null,
+        risk_var_95_hist: r.risk_var_95_hist ?? null,
+        risk_var_99_hist: r.risk_var_99_hist ?? null,
+        risk_var_95_param: r.risk_var_95_param ?? null,
+        risk_var_99_param: r.risk_var_99_param ?? null,
+        risk_cvar_95: r.risk_cvar_95 ?? null,
+        risk_beta: r.risk_beta ?? null,
+        risk_summary_score: r.risk_summary_score ?? null,
+      }));
+      await createOrUpdateDailyWatchlist(currentUser.id, symbols, startedAtIso, snapshotItems);
       setTodayWatchlist(symbols.map((s) => s.toUpperCase()));
+      setTodayWatchlistLabel(buildWatchlistLabel(startedAtIso.slice(0, 10), startedAtIso));
       showFeedback(`Saved ${symbols.length} symbols to today's watchlist (date: ${new Date().toISOString().slice(0, 10)}).`);
     } catch (err: unknown) {
       const msg = getErrorMessage(err);
@@ -811,7 +1033,7 @@ const AdminDashboard: React.FC = () => {
         <p className="mt-4 text-[10px] text-slate-400 font-medium italic">* File must contain columns named "Ticker" and "Name".</p>
       </div>
 
-      {/* Create watchlist of today: one-click load SP500 (first 100) → Yahoo data → save */}
+      {/* Create watchlist of today: one-click load SP500 (full or chosen size) → Yahoo data → save */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-8 relative overflow-hidden">
         {dailyWatchlistTableMissing && (
           <div className="mb-6 p-6 rounded-2xl bg-amber-50 border border-amber-200">
@@ -824,7 +1046,7 @@ const AdminDashboard: React.FC = () => {
         <div className="space-y-4">
           <div>
             <h3 className="font-bold text-slate-900 uppercase tracking-widest text-sm">Create watchlist of today</h3>
-            <p className="text-xs text-slate-400 font-bold mt-1">Load the first 100 companies from the Watchlist API (SP500), fetch live data from Yahoo Finance, then save to today&apos;s daily watchlist. One click does it all.</p>
+            <p className="text-xs text-slate-400 font-bold mt-1">Load the SP500 list from the Watchlist API (up to 600), fetch live data from Yahoo Finance, then save to today&apos;s daily watchlist. One click does it all.</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
             <div className="space-y-1.5">
@@ -842,9 +1064,9 @@ const AdminDashboard: React.FC = () => {
               <input
                 type="number"
                 min={5}
-                max={100}
+                max={600}
                 value={shortListLimit}
-                onChange={(e) => setShortListLimit(Math.max(5, Math.min(100, Number(e.target.value) || 100)))}
+                onChange={(e) => setShortListLimit(Math.max(5, Math.min(600, Number(e.target.value) || 600)))}
                 className="w-full px-4 py-2 border border-slate-200 rounded-xl font-bold text-slate-700"
               />
             </div>
@@ -905,6 +1127,22 @@ const AdminDashboard: React.FC = () => {
                       <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Earnings — Net Income</th>
                       <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Cash flow — Operating</th>
                       <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Cash flow — Free</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">CTR Total %</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">CTR Ann. %</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Mean Daily %</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Vol Daily %</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Vol Ann. %</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Sharpe</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Sortino</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Max DD %</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">VaR 95% (Hist)</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">VaR 99% (Hist)</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">VaR 95% (Param)</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">VaR 99% (Param)</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">CVaR 95%</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Beta</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Risk Summary (0-100)</th>
+                      <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Torchlight (0-100)</th>
                       <th className="p-2 font-black text-slate-600 uppercase whitespace-nowrap">Full statements</th>
                     </tr>
                   </thead>
@@ -923,6 +1161,30 @@ const AdminDashboard: React.FC = () => {
                         <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.net_income)}</td>
                         <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.operating_cash_flow)}</td>
                         <td className="p-2 font-mono text-slate-700">{formatStatementNum(r.free_cash_flow)}</td>
+                        <td className={`p-2 font-mono font-bold ${(r.ctr_total_return ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          {r.ctr_total_return != null ? `${(r.ctr_total_return * 100).toFixed(2)}%` : '—'}
+                        </td>
+                        <td className={`p-2 font-mono font-bold ${(r.ctr_annualized ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          {r.ctr_annualized != null ? `${(r.ctr_annualized * 100).toFixed(2)}%` : '—'}
+                        </td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_daily_return_mean != null ? `${(r.risk_daily_return_mean * 100).toFixed(3)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_volatility_daily != null ? `${(r.risk_volatility_daily * 100).toFixed(2)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_volatility_annual != null ? `${(r.risk_volatility_annual * 100).toFixed(2)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_sharpe != null ? r.risk_sharpe.toFixed(2) : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_sortino != null ? r.risk_sortino.toFixed(2) : '—'}</td>
+                        <td className={`p-2 font-mono font-bold ${(r.risk_max_drawdown ?? 0) <= 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                          {r.risk_max_drawdown != null ? `${(r.risk_max_drawdown * 100).toFixed(2)}%` : '—'}
+                        </td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_var_95_hist != null ? `${(r.risk_var_95_hist * 100).toFixed(2)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_var_99_hist != null ? `${(r.risk_var_99_hist * 100).toFixed(2)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_var_95_param != null ? `${(r.risk_var_95_param * 100).toFixed(2)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_var_99_param != null ? `${(r.risk_var_99_param * 100).toFixed(2)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_cvar_95 != null ? `${(r.risk_cvar_95 * 100).toFixed(2)}%` : '—'}</td>
+                        <td className="p-2 font-mono text-slate-700">{r.risk_beta != null ? r.risk_beta.toFixed(2) : '—'}</td>
+                        <td className="p-2 font-mono font-bold text-slate-700">{r.risk_summary_score != null ? r.risk_summary_score.toFixed(1) : '—'}</td>
+                        <td className="p-2 font-mono font-bold text-indigo-700">
+                          {r.torchlight_score != null ? r.torchlight_score.toFixed(1) : '—'}
+                        </td>
                         <td className="p-2">
                           <button
                             type="button"
@@ -1024,9 +1286,16 @@ const AdminDashboard: React.FC = () => {
             </button>
           </div>
           {todayWatchlist.length > 0 && (
-            <p className="text-xs text-slate-500 font-medium">
-              Current today&apos;s list: <span className="font-bold text-slate-700">{todayWatchlist.join(', ')}</span>
-            </p>
+            <div className="text-xs text-slate-500 font-medium space-y-1">
+              {todayWatchlistLabel && (
+                <p>
+                  Label: <span className="font-bold text-indigo-700">{todayWatchlistLabel}</span>
+                </p>
+              )}
+              <p>
+                Current today&apos;s list: <span className="font-bold text-slate-700">{todayWatchlist.join(', ')}</span>
+              </p>
+            </div>
           )}
         </div>
       </div>

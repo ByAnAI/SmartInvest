@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from data_loader import fetch_financial_summary, fetch_financial_statements, fetch_financials_batch, load_tickers
+from data_loader import fetch_financial_summary, fetch_financial_statements, fetch_financials_batch, fetch_returns_batch, load_tickers
 
 app = FastAPI(title="Watchlist API", version="0.1.0")
 
@@ -21,7 +21,7 @@ app.add_middleware(
 
 
 @app.get("/api/lists/sp500")
-def get_sp500_list(limit: int = Query(default=100, le=600, description="Max number of tickers")) -> list[dict[str, Any]]:
+def get_sp500_list(limit: int = Query(default=600, le=600, description="Max number of tickers")) -> list[dict[str, Any]]:
     """Return company list (from CSV). Use limit for a short list."""
     return load_tickers(limit=limit)
 
@@ -40,9 +40,16 @@ def get_financial_statements(ticker: str) -> dict[str, Any] | None:
 
 @app.post("/api/financials/batch")
 def post_financials_batch(body: dict[str, list[str]]) -> list[dict[str, Any]]:
-    """Fetch current data for multiple tickers (max 100). Body: { \"tickers\": [\"AAPL\", \"MSFT\"] }"""
+    """Fetch current data for multiple tickers (max 600). Body: { \"tickers\": [\"AAPL\", \"MSFT\"] }"""
     tickers = body.get("tickers") or []
     return fetch_financials_batch(tickers)
+
+
+@app.post("/api/financials/returns-batch")
+def post_returns_batch(body: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """Fetch daily returns series for multiple tickers (max 600). Body: { \"tickers\": [\"AAPL\", \"MSFT\"] }"""
+    tickers = body.get("tickers") or []
+    return fetch_returns_batch(tickers)
 
 
 @app.get("/api/health")
