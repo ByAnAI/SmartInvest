@@ -25,7 +25,7 @@ Set in Dashboard → Project Settings → Edge Functions → Secrets (or via CLI
 ## How to test
 
 1. **From the app (recommended)**  
-   - Sign in as admin (e.g. idris.elfeghi@byanai.com).  
+   - Sign in as admin (e.g. admin@bts.com).  
    - Open the Admin panel and go to the “Other users” section.  
    - Click **Delete** on a test user and confirm.  
    - You should see “User deleted.” and the user should disappear. That user can no longer sign in.

@@ -36,13 +36,13 @@ create policy "Authenticated can read daily watchlist"
 create policy "Admins can insert daily watchlist"
   on public.daily_watchlist for insert
   to authenticated
-  with check (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com');
+  with check (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
 
 -- 7) Only admins can update
 create policy "Admins can update daily watchlist"
   on public.daily_watchlist for update
   to authenticated
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com')
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com')
   with check (true);
 
 -- 8) Snapshot rows for fast read in AI Analysis (saved data, no live fetch needed)
@@ -180,15 +180,15 @@ create policy "Authenticated can read daily watchlist items"
 create policy "Admins can insert daily watchlist items"
   on public.daily_watchlist_items for insert
   to authenticated
-  with check (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com');
+  with check (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
 
 create policy "Admins can update daily watchlist items"
   on public.daily_watchlist_items for update
   to authenticated
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com')
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com')
   with check (true);
 
 create policy "Admins can delete daily watchlist items"
   on public.daily_watchlist_items for delete
   to authenticated
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com');
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');

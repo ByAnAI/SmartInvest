@@ -29,7 +29,7 @@ create policy "Users can read own profile"
 -- 4) Admins can read ALL profiles (so the admin panel user list works)
 create policy "Admins can read all profiles"
   on public.profiles for select
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com');
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
 
 -- 5) Allow insert so new sign-ups can create their profile (app does this in initializeUser)
 create policy "Users can insert own profile"
@@ -44,13 +44,13 @@ create policy "Users can update own profile"
 
 create policy "Admins can update any profile"
   on public.profiles for update
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com')
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com')
   with check (true);
 
 -- 7) Admins can delete any profile (for "remove user" in admin panel)
 create policy "Admins can delete any profile"
   on public.profiles for delete
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'idris.elfeghi@byanai.com');
+  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
 
 -- 8) Optional: trigger to create a profile when a new user signs up (so they appear in the list immediately)
 create or replace function public.handle_new_user()
@@ -62,7 +62,7 @@ begin
     coalesce(new.email, ''),
     coalesce(new.raw_user_meta_data->>'full_name', split_part(coalesce(new.email, ''), '@', 1), 'Investor'),
     'active',
-    case when new.email = 'idris.elfeghi@byanai.com' then 'admin' else 'user' end,
+    case when new.email = 'admin@bts.com' then 'admin' else 'user' end,
     coalesce((new.raw_user_meta_data->>'email_verified')::boolean, false),
     now(),
     now(),

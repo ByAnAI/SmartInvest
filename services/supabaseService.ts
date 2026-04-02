@@ -4,7 +4,7 @@ import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, Market
 // --- USER MANAGEMENT ---
 
 export const initializeUser = async (uid: string, email?: string | null, displayName?: string | null) => {
-    const MASTER_ADMIN_EMAIL = "idris.elfeghi@byanai.com";
+    const MASTER_ADMIN_EMAIL = "admin@bts.com";
     const emailNormalized = (email || '').trim().toLowerCase();
 
     // Try to fetch user from 'profiles' table (renamed from 'users' to avoid confusion with internal auth)

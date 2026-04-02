@@ -31,7 +31,7 @@ export const initializeUser = async (uid: string, email?: string | null, display
   }
 
   // Auto-promote specific email to admin
-  const MASTER_ADMIN_EMAIL = "idris.elfeghi@byanai.com";
+  const MASTER_ADMIN_EMAIL = "admin@bts.com";
   const role = (email === MASTER_ADMIN_EMAIL) ? 'admin' : 'user';
 
   // Create new user if not exists

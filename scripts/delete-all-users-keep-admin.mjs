@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Delete all Supabase Auth users EXCEPT idris.elfeghi@byanai.com.
+ * Delete all Supabase Auth users EXCEPT admin@bts.com.
  * Uses the service_role key (Admin API). Run once from project root:
  *
  *   SUPABASE_URL=https://YOUR_PROJECT.supabase.co SUPABASE_SERVICE_ROLE_KEY=your_service_role_key node scripts/delete-all-users-keep-admin.mjs
@@ -11,7 +11,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const ADMIN_EMAIL = 'idris.elfeghi@byanai.com';
+const ADMIN_EMAIL = 'admin@bts.com';
 const url = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 

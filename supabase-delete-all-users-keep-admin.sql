@@ -1,12 +1,12 @@
 -- ONE-TIME CLEANUP: Delete all users EXCEPT the admin so they must sign up again.
--- After this, only idris.elfeghi@byanai.com can log in. Others will need to re-register.
+-- After this, only admin@bts.com can log in. Others will need to re-register.
 -- Their profiles are removed automatically (profiles.uid → auth.users(id) ON DELETE CASCADE).
 --
 -- If this script runs with no error but users still appear in the app:
 --   The SQL Editor often cannot DELETE from auth.users (restricted permissions).
 --   Use one of these instead:
 --
---   A) Dashboard: Authentication → Users → delete each user except idris.elfeghi@byanai.com
+--   A) Dashboard: Authentication → Users → delete each user except admin@bts.com
 --
 --   B) Admin API script (recommended):
 --      SUPABASE_URL=https://YOUR_PROJECT.supabase.co SUPABASE_SERVICE_ROLE_KEY=your_service_role_key \
@@ -23,4 +23,4 @@
 -- (May affect 0 rows if the SQL Editor role cannot delete from auth.users.)
 delete from auth.users
 where email is null
-   or lower(trim(email)) != 'idris.elfeghi@byanai.com';
+   or lower(trim(email)) != 'admin@bts.com';

@@ -16,6 +16,7 @@ import TeamMembers from './components/TeamMembers';
 import { UserMetadata } from './types';
 
 const App: React.FC = () => {
+  const MASTER_ADMIN_EMAIL = 'admin@bts.com';
   const [activeTab, setActiveTab] = useState('portfolio');
   const [user, setUser] = useState<any | null>(null);
   const [userMetadata, setUserMetadata] = useState<UserMetadata | null>(null);
@@ -55,7 +56,7 @@ const App: React.FC = () => {
         currentUser.email,
         currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0]
       ).then((metadata) => {
-        const isMasterAdmin = (currentUser.email || '').trim().toLowerCase() === 'idris.elfeghi@byanai.com';
+        const isMasterAdmin = (currentUser.email || '').trim().toLowerCase() === MASTER_ADMIN_EMAIL;
         if (metadata.status === 'disabled' && !isMasterAdmin) {
           signOutSuspended();
         } else {
@@ -130,7 +131,7 @@ const App: React.FC = () => {
   // Logic to determine admin status: 
   // 1. Hard check for specific master email
   // 2. Database role check
-  const isAdmin = ((user?.email || '').trim().toLowerCase() === 'idris.elfeghi@byanai.com') || userMetadata?.role === 'admin';
+  const isAdmin = ((user?.email || '').trim().toLowerCase() === MASTER_ADMIN_EMAIL) || userMetadata?.role === 'admin';
 
   const renderContent = () => {
     switch (activeTab) {

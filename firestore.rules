@@ -13,7 +13,7 @@ service cloud.firestore {
     function isMasterAdmin() {
       return request.auth != null && 
              request.auth.token.keys().hasAny(['email']) && 
-             request.auth.token.email == "idris.elfeghi@byanai.com";
+             request.auth.token.email == "admin@bts.com";
     }
 
     // Check if user has admin role in database

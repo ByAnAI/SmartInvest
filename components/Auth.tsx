@@ -149,7 +149,12 @@ const Auth: React.FC<AuthProps> = ({ onClose, initialError, initialMode = 'login
         });
 
         if (error) throw error;
-
+        // If email confirmations are disabled in Supabase, session is returned and user is logged in immediately.
+        if (data?.session) {
+          onClose();
+          return;
+        }
+        // Fallback for projects that still require confirmation.
         setVerificationSent(true);
         setLoading(false);
 
