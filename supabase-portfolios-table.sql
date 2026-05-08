@@ -1,0 +1,42 @@
+-- Run this in Supabase SQL Editor (Dashboard → SQL Editor) if the portfolios table does not exist.
+-- This ensures each user's portfolio persists after logout and is scoped by user_id.
+
+create table if not exists public.portfolios (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  symbol text not null,
+  shares numeric not null default 1,
+  avg_cost numeric not null default 0,
+  opened_at timestamptz default now(),
+  first_buy_price numeric,
+  primary key (user_id, symbol)
+);
+
+-- Allow authenticated users to read/insert/update/delete only their own rows
+alter table public.portfolios enable row level security;
+
+drop policy if exists "Users can read own portfolio" on public.portfolios;
+create policy "Users can read own portfolio"
+  on public.portfolios for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert own portfolio" on public.portfolios;
+create policy "Users can insert own portfolio"
+  on public.portfolios for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update own portfolio" on public.portfolios;
+create policy "Users can update own portfolio"
+  on public.portfolios for update
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can delete own portfolio" on public.portfolios;
+create policy "Users can delete own portfolio"
+  on public.portfolios for delete
+  using (auth.uid() = user_id);
+
+-- Optional: support both column names (avg_cost in DB, app uses avgCost via mapping)
+comment on column public.portfolios.avg_cost is 'Average cost per share; app may send as avgCost';
+comment on column public.portfolios.opened_at is 'UTC time of last purchase; app sets on every buy. See supabase-portfolios-opened-at.sql for legacy DBs.';
+comment on column public.portfolios.first_buy_price is 'Per-share price at first purchase; see supabase-portfolios-first-buy-price.sql for existing DBs.';
+
+-- If the table already existed without opened_at / first_buy_price, run the matching migration SQL files once.

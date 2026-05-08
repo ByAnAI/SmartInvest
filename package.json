@@ -1,0 +1,46 @@
+{
+  "name": "stockinvest",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/ensure-dev-admin.mjs && vite",
+    "dev:all": "node scripts/ensure-dev-admin.mjs && concurrently -k -n api,web -c blue,cyan \"npm run watchlist-api\" \"vite\"",
+    "free-watchlist-port": "node scripts/free-watchlist-port.mjs",
+    "dev:all:fresh": "node scripts/free-watchlist-port.mjs && npm run dev:all",
+    "dev:local": "vite --mode local",
+    "build": "vite build",
+    "preview": "vite preview",
+    "watchlist-api": "node scripts/watchlist-api.mjs",
+    "uvicorn": "node scripts/watchlist-api.mjs",
+    "watchlist-api:setup": "cd backend && python3 -m venv .venv && ./.venv/bin/pip install --upgrade pip && ./.venv/bin/pip install -r requirements.txt",
+    "watchlist-api:docker": "docker compose -f docker-compose.watchlist.yml up --build",
+    "download:forex": "backend/.venv/bin/python scripts/download_forex_history.py",
+    "download:forex:all": "backend/.venv/bin/python scripts/download_forex_history.py --all",
+    "db:push": "npx supabase db push",
+    "auth:bulk-recovery-links": "node scripts/bulk-password-recovery.mjs",
+    "auth:bulk-set-universal-password": "node scripts/bulk-set-universal-password.mjs",
+    "test:login": "node scripts/test-login.mjs",
+    "auth:check-user": "node scripts/check-auth-user.mjs",
+    "auth:sync-admin": "node scripts/set-admin-user.mjs",
+    "watchlist:today": "node scripts/watchlist-today-cli.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^1.41.0",
+    "@supabase/supabase-js": "^2.98.0",
+    "exceljs": "^4.4.0",
+    "firebase": "^12.9.0",
+    "lightweight-charts": "^5.1.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "recharts": "^3.7.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.1",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

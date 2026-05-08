@@ -1,0 +1,36 @@
+.env
+.env.local
+.env.*.local
+node_modules
+dist
+
+# Python (Watchlist API)
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+
+# Large local dumps (GitHub blocks files > 100 MB)
+*.zip
+drive-download-*/
+
+# Generated watchlist exports (rebuild with npm run watchlist:today)
+watchlist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Vite cache
+.vite/
+
+# Nested duplicate project (has its own .git — keep development at repo root)
+SmartInvest/
+
+# Browser download remnants / stray files
+*.crdownload
+
+# Accidental empty/stray filenames at repo root
+/node
+/stockinvest@0.0.0

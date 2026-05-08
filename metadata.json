@@ -1,0 +1,5 @@
+{
+  "name": "stockinvest",
+  "description": "An intelligent stock market dashboard powered by Gemini AI, offering deep sentiment analysis, market insights, and interactive portfolio tracking with a premium financial aesthetic.",
+  "requestFramePermissions": []
+}

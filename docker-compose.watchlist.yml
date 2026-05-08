@@ -1,0 +1,15 @@
+# Watchlist API only (FastAPI + Yahoo Finance). No local Python required if Docker is installed.
+# From repo root: npm run watchlist-api:docker
+services:
+  watchlist-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Image WORKDIR is /app (backend files only); components/ is not in the image
+      SP500_INSTRUMENT_CSV: /app/data/sp500.csv
+      # Optional: mount a host dir and set ALPACA_WATCHLIST_EXPORT_DIR so exports land on disk
+      # ALPACA_WATCHLIST_EXPORT_DIR: /out
+    restart: unless-stopped
