@@ -23,6 +23,7 @@ import {
 } from '../services/marketSimulation';
 import { getFinnhubToken } from '../services/tradingQuotes';
 import { watchlistUserVisibleLabel } from '../utils/watchlistDisplay';
+import { isSp500OnlyMode } from '../utils/sp500OnlyMode';
 
 const PORTFOLIO_REFRESH_MS = 300_000; // 5 minutes
 
@@ -177,12 +178,26 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = tru
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [itemToDelete, setItemToDelete] = useState<string | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState<'EQUITIES' | 'COMMODITIES' | 'NASDAQ' | 'S&P' | 'CRYPTO' | 'FOREX' | 'ALL'>('EQUITIES');
+  const [selectedCategory, setSelectedCategory] = useState<'EQUITIES' | 'COMMODITIES' | 'NASDAQ' | 'S&P' | 'CRYPTO' | 'FOREX' | 'ALL'>(() =>
+    isSp500OnlyMode() ? 'S&P' : 'EQUITIES',
+  );
   const [liveFxRates, setLiveFxRates] = useState<Record<string, number>>({});
   const [latestWatchlistLabel, setLatestWatchlistLabel] = useState<string>('No watchlist snapshot available');
   const [latestMetricsBySymbol, setLatestMetricsBySymbol] = useState<Record<string, LatestWatchlistMetric>>({});
   const [healthLoading, setHealthLoading] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const explorerCategoryTabs = useMemo(
+    () =>
+      isSp500OnlyMode()
+        ? (['S&P'] as const)
+        : (['EQUITIES', 'COMMODITIES', 'NASDAQ', 'S&P', 'CRYPTO', 'FOREX', 'ALL'] as const),
+    [],
+  );
+
+  useEffect(() => {
+    if (isSp500OnlyMode()) setSelectedCategory('S&P');
+  }, []);
 
   const [simState, setSimState] = useState<MarketSimulationState>(() =>
     loadMarketSimulationState(undefined)
@@ -487,7 +502,9 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = tru
       ...f,
       price: liveFxRates[f.symbol] ?? f.price,
     }));
-    const MASTER_DIRECTORY = [...TICKER_DIRECTORY, ...SP500_TICKERS, ...NASDAQ_TICKERS, ...CRYPTO_TICKERS, ...forexWithLiveRates];
+    const MASTER_DIRECTORY = isSp500OnlyMode()
+      ? [...SP500_TICKERS]
+      : [...TICKER_DIRECTORY, ...SP500_TICKERS, ...NASDAQ_TICKERS, ...CRYPTO_TICKERS, ...forexWithLiveRates];
 
     const baseList = selectedCategory === 'ALL'
       ? MASTER_DIRECTORY
@@ -1144,7 +1161,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = tru
             Market Explorer
           </h3>
           <div className="flex items-center bg-slate-100 p-1 rounded-xl overflow-x-auto no-scrollbar">
-            {(['EQUITIES', 'COMMODITIES', 'NASDAQ', 'S&P', 'CRYPTO', 'FOREX', 'ALL'] as const).map((cat) => (
+            {explorerCategoryTabs.map((cat) => (
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}

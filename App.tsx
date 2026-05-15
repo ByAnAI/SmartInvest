@@ -13,6 +13,9 @@ import Auth from './components/Auth';
 import MyFiles from './components/MyFiles';
 import MyNotes from './components/MyNotes';
 import TeamMembers from './components/TeamMembers';
+import SentimentAnalysis from './components/SentimentAnalysis';
+import MarketSimulation from './components/MarketSimulation';
+import NewsBoard from './components/NewsBoard';
 import { UserMetadata } from './types';
 
 const App: React.FC = () => {
@@ -143,6 +146,16 @@ const App: React.FC = () => {
         return <TradingPlatform />;
       case 'portfolio':
         return <Portfolio userId={user?.id} />;
+      case 'market-simulation':
+        return <MarketSimulation userId={user?.id ?? null} />;
+      case 'sentiment-analysis':
+        return <SentimentAnalysis userId={user?.id ?? null} />;
+      case 'news-board':
+        return user ? (
+          <NewsBoard user={user} userMetadata={userMetadata} isAdmin={isAdmin} />
+        ) : (
+          <Dashboard />
+        );
       case 'files':
         return <MyFiles />;
       case 'notes':

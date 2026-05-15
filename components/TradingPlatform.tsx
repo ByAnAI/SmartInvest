@@ -15,6 +15,7 @@ import {
   type TradingWatchlistSource,
 } from '../utils/personalWatchlistStorage';
 import { parsePersonalWatchlistFile } from '../utils/parsePersonalWatchlistFile';
+import { isSp500OnlyMode } from '../utils/sp500OnlyMode';
 import {
   TRADING_FOREX_DISPLAY,
   fetchForexTradingPrices,
@@ -93,6 +94,11 @@ function formatCrypto(p: number): string {
 }
 
 const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader }) => {
+  const panelNavItems = useMemo(
+    () => (isSp500OnlyMode() ? PANEL_NAV.filter((p) => p.id === 'sp500') : PANEL_NAV),
+    [],
+  );
+
   const [panel, setPanel] = useState<TradingPanel>('sp500');
   const [simUserId, setSimUserId] = useState<string | null>(null);
   const [paperCryptoId, setPaperCryptoId] = useState<string>(CRYPTO_QUOTE_ROWS[0]?.id ?? 'BTC');
@@ -123,6 +129,11 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
   const [fxCandleDetail, setFxCandleDetail] = useState<string | null>(null);
 
   const finnhubKey = getFinnhubToken();
+
+  useEffect(() => {
+    if (!isSp500OnlyMode()) return;
+    setPanel((p) => (p !== 'sp500' ? 'sp500' : p));
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSimUserId(data.session?.user?.id ?? null));
@@ -398,13 +409,18 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
   }, [watchRows]);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 max-w-6xl mx-auto animate-in fade-in duration-500 pb-12 px-1">
+    <div
+      className={`flex flex-col gap-6 lg:gap-8 max-w-6xl mx-auto animate-in fade-in duration-500 pb-12 px-1 ${
+        panelNavItems.length > 1 ? 'lg:flex-row' : ''
+      }`}
+    >
       {/* Side menu */}
+      {panelNavItems.length > 1 ? (
       <aside className="lg:w-56 shrink-0">
         <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm lg:sticky lg:top-4">
           <p className="px-3 pt-2 pb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Markets</p>
           <nav className="flex flex-row lg:flex-col gap-1 overflow-x-auto lg:overflow-visible pb-1 lg:pb-0">
-            {PANEL_NAV.map((item) => (
+            {panelNavItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -433,6 +449,7 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
           </nav>
         </div>
       </aside>
+      ) : null}
 
       {/* Main */}
       <main className="flex-1 min-w-0 space-y-4">

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Start the FastAPI Watchlist API (default port 8000). Requires backend/.venv (see npm run watchlist-api:setup).
- * Port: set WATCHLIST_API_PORT in repo root `.env` if 8000 is busy (must match vite proxy target).
- * Forwards CSV-related keys from `.env` into the Python process (Vite does not do that).
+ * Port: set WATCHLIST_API_PORT in repo root `.env` or `.env.local` if 8000 is busy (must match Vite proxy).
+ * Forwards CSV-related keys from `.env` and `.env.local` into the Python process (Vite does not do that).
  * Usage: npm run watchlist-api
  */
 import { spawn } from 'node:child_process';
@@ -25,6 +25,7 @@ const BACKEND_ENV_KEYS = new Set([
   'SMARTINVEST_WATCHLIST_CSV_DIR',
   'WATCHLIST_SNAPSHOT_CSV_DISABLED',
   'WATCHLIST_API_PORT',
+  'WATCHLIST_API_GC_TICKER',
 ]);
 
 function parseBackendEnvFromDotEnv(dotEnvPath) {
@@ -70,8 +71,11 @@ Then test (replace port if you set WATCHLIST_API_PORT):  curl http://127.0.0.1:8
 }
 
 function run(python) {
-  const rootEnvPath = path.join(__dirname, '..', '.env');
-  const fromFile = parseBackendEnvFromDotEnv(rootEnvPath);
+  const root = path.join(__dirname, '..');
+  const fromFile = {
+    ...parseBackendEnvFromDotEnv(path.join(root, '.env')),
+    ...parseBackendEnvFromDotEnv(path.join(root, '.env.local')),
+  };
   const merged = { ...process.env, ...fromFile };
   const port =
     merged.WATCHLIST_API_PORT?.trim() ||

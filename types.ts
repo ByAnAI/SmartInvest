@@ -34,11 +34,25 @@ export interface UserMetadata {
 
 export interface InsightResponse {
   sentiment: 'Bullish' | 'Bearish' | 'Neutral';
+  /** Short synthesis; when structured views exist, this is usually the executive_summary from the model. */
   summary: string;
   pros: string[];
   cons: string[];
   recommendation: string;
   confidence: number;
+  /** IV / price / upside — only when the model returns structured equity JSON. */
+  valuation_view?: string;
+  /** Headline Torchlight + sub-scores + rank_factors — structured equity JSON. */
+  torchlight_view?: string;
+  /** Risk metrics narrative — structured equity JSON. */
+  risk_view?: string;
+  /** Today-news / catalysts grounded in the Finnhub block only — structured equity JSON. */
+  market_catalysts?: string;
+  /**
+   * Long-form narrative for ticker analysis: ties ticker + recommendation to valuation,
+   * Torchlight/CTR, risk, catalysts, and monitoring (multi-paragraph plain text).
+   */
+  extended_report?: string;
 }
 
 /** Structured news sentiment (portfolio sentiment tab); matches LLM JSON contract. */

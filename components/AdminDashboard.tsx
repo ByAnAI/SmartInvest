@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   getAllUsers,
   initializeUser,
@@ -53,6 +53,7 @@ import {
   parseTickerListCsv,
   type MarketAssetRow,
 } from '../utils/sp500WatchlistUpload';
+import { isSp500OnlyMode } from '../utils/sp500OnlyMode';
 import * as XLSX from 'xlsx';
 import { FOREX_TICKERS } from './ForexData';
 import { fetchForexSentinelContext, postForexRefresh } from '../services/forexSentinel';
@@ -266,6 +267,9 @@ type AdminDashboardProps = {
   sessionUser: AdminDashboardSessionUser | null;
 };
 
+/** Wide tables (many columns × hundreds of rows) freeze the browser; preview this many rows first. */
+const WATCHLIST_ADMIN_TABLE_ROW_CAP = 120;
+
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
   const currentUser = sessionUser;
   const [users, setUsers] = useState<UserMetadata[]>([]);
@@ -304,6 +308,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
   const [watchlistApiUrl, setWatchlistApiUrl] = useState(() => getDefaultWatchlistApiBase());
   const [shortListLimit, setShortListLimit] = useState(50);
   const [loadedShortList, setLoadedShortList] = useState<AdminLoadedShortListRow[]>([]);
+  const [showAllLoadedShortRows, setShowAllLoadedShortRows] = useState(false);
+  const [showAllSelectedRows, setShowAllSelectedRows] = useState(false);
   const [loadingShortList, setLoadingShortList] = useState(false);
   const [loadingYahooData, setLoadingYahooData] = useState(false);
   const [savingShortListToDaily, setSavingShortListToDaily] = useState(false);
@@ -327,6 +333,29 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
   const [forexSentinelObs, setForexSentinelObs] = useState<Record<string, unknown> | null>(null);
   const [forexSentinelInsight, setForexSentinelInsight] = useState<InsightResponse | null>(null);
   const [savingForexWatchlist, setSavingForexWatchlist] = useState(false);
+
+  useEffect(() => {
+    if (!isSp500OnlyMode()) return;
+    if (selectedMarket !== 'SP500') setSelectedMarket('SP500');
+  }, [selectedMarket]);
+
+  useEffect(() => {
+    setShowAllLoadedShortRows(false);
+  }, [loadedShortList.length]);
+
+  useEffect(() => {
+    setShowAllSelectedRows(false);
+  }, [selectedWatchlistId]);
+
+  const loadedShortListForTable = useMemo(() => {
+    if (showAllLoadedShortRows || loadedShortList.length <= WATCHLIST_ADMIN_TABLE_ROW_CAP) return loadedShortList;
+    return loadedShortList.slice(0, WATCHLIST_ADMIN_TABLE_ROW_CAP);
+  }, [loadedShortList, showAllLoadedShortRows]);
+
+  const selectedWatchlistItemsForTable = useMemo(() => {
+    if (showAllSelectedRows || selectedWatchlistItems.length <= WATCHLIST_ADMIN_TABLE_ROW_CAP) return selectedWatchlistItems;
+    return selectedWatchlistItems.slice(0, WATCHLIST_ADMIN_TABLE_ROW_CAP);
+  }, [selectedWatchlistItems, showAllSelectedRows]);
 
   /** Writes under dirs configured in repo-root `.env` read by Python (SMARTINVEST_WATCHLIST_CSV_DIR, ALPACA_WATCHLIST_EXPORT_DIR). */
   const maybeSaveWatchlistToApiFolders = async (
@@ -489,7 +518,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
     try {
       localStorage.setItem(WATCHLIST_SNAPSHOT_STORAGE_KEY, JSON.stringify(snap));
     } catch {
-      /* ignore quota */
+      showFeedback('Could not cache snapshot in browser storage (quota or private mode). The download still succeeded.');
     }
     showFeedback('Snapshot JSON downloaded (also cached in this browser for quick reload). Share the file; recipients Import, then Save to Supabase.');
   };
@@ -535,13 +564,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
       const rows = snapshotToLoadedRows(parsed) as AdminLoadedShortListRow[];
       setLoadedShortList(rows);
       setIgnoreAdminWatchlistCap(false);
+      let cacheNote = '';
       try {
         localStorage.setItem(WATCHLIST_SNAPSHOT_STORAGE_KEY, text.trim());
-      } catch {
-        /* ignore */
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/quota|22|exceeded|storage is full/i.test(msg)) {
+          cacheNote = ' Browser storage is full — raw JSON was not cached; use Download snapshot to keep a copy.';
+        } else {
+          cacheNote = ` Could not cache in browser: ${msg}`;
+        }
       }
       showFeedback(
-        `Imported ${rows.length} ticker${rows.length === 1 ? '' : 's'}${parsed.label ? ` · ${parsed.label}` : ''}. Save watchlist of today publishes to Supabase for all users.`,
+        `Imported ${rows.length} ticker${rows.length === 1 ? '' : 's'}${parsed.label ? ` · ${parsed.label}` : ''}.${cacheNote} Save watchlist of today publishes to Supabase for all users.`,
       );
     } catch (e: unknown) {
       setError(getErrorMessage(e));
@@ -785,13 +820,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
       await batchUploadMarketData(selectedMarket, assets);
 
       if (selectedMarket === 'SP500') {
+        let sp500CacheNote = '';
         if (sp500TableRows) {
           setLoadedShortList(sp500TableRows);
           if (jsonSnapshotText) {
             try {
               localStorage.setItem(WATCHLIST_SNAPSHOT_STORAGE_KEY, jsonSnapshotText.trim());
             } catch {
-              /* quota */
+              sp500CacheNote =
+                ' Browser could not cache JSON (storage full) — use Download snapshot if you need an offline copy.';
             }
           }
         } else {
@@ -805,7 +842,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
         }
         setIgnoreAdminWatchlistCap(false);
         showFeedback(
-          `Uploaded ${assets.length} symbols to S&P 500 — table updated below. Fetch Yahoo data, then Save watchlist of today if needed.`
+          `Uploaded ${assets.length} symbols to S&P 500 — table updated below. Fetch Yahoo data, then Save watchlist of today if needed.${sp500CacheNote}`,
         );
       } else {
         showFeedback(`Successfully uploaded ${assets.length} assets to ${selectedMarket} database.`);
@@ -1721,13 +1758,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
             <select
               value={selectedMarket}
               onChange={(e) => setSelectedMarket(e.target.value)}
-              className="w-full px-5 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 appearance-none"
+              disabled={isSp500OnlyMode()}
+              className="w-full px-5 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 appearance-none disabled:opacity-90 disabled:cursor-not-allowed"
             >
               <option value="SP500">S&P 500</option>
-              <option value="NASDAQ">Nasdaq</option>
-              <option value="ASIA">Asian Markets</option>
-              <option value="CRYPTO">Cryptocurrency</option>
-              <option value="COMMODITY">Commodities</option>
+              {!isSp500OnlyMode() ? (
+                <>
+                  <option value="NASDAQ">Nasdaq</option>
+                  <option value="ASIA">Asian Markets</option>
+                  <option value="CRYPTO">Cryptocurrency</option>
+                  <option value="COMMODITY">Commodities</option>
+                </>
+              ) : null}
             </select>
           </div>
 
@@ -2052,6 +2094,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
                 Loaded list ({loadedShortList.length}) — Balance sheet, Cash flow, Earnings / Income statement from Yahoo Finance
               </p>
+              {loadedShortList.length > WATCHLIST_ADMIN_TABLE_ROW_CAP && (
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+                  <span>
+                    Showing {loadedShortListForTable.length} of {loadedShortList.length} rows in the table (large lists can freeze the browser).
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllLoadedShortRows((v) => !v)}
+                    className="px-2 py-1 rounded-lg bg-white border border-slate-200 font-bold text-indigo-700 hover:bg-slate-50"
+                  >
+                    {showAllLoadedShortRows ? 'Show preview only' : 'Show all rows'}
+                  </button>
+                </div>
+              )}
               <div className="overflow-x-auto max-h-96 overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse min-w-[900px]">
                   <thead className="sticky top-0 bg-slate-100 z-10">
@@ -2086,7 +2142,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
                     </tr>
                   </thead>
                   <tbody>
-                    {loadedShortList.map((r) => (
+                    {loadedShortListForTable.map((r) => (
                       <tr key={r.ticker} className="border-t border-slate-200">
                         <td className="p-2 font-mono font-bold text-slate-800">{r.ticker}</td>
                         <td className="p-2 text-slate-600 max-w-[120px] truncate" title={r.short_name || r.company || ''}>{r.short_name || r.company || '—'}</td>
@@ -2231,7 +2287,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
             <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                  Selected watchlist items ({selectedWatchlistItems.length})
+                  Selected watchlist items ({selectedWatchlistItems.length}
+                  {selectedWatchlistItems.length > WATCHLIST_ADMIN_TABLE_ROW_CAP && !showAllSelectedRows
+                    ? ` — preview ${selectedWatchlistItemsForTable.length}`
+                    : ''}
+                  )
                 </p>
                 <button
                   type="button"
@@ -2248,6 +2308,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
                   Download CSV (all columns)
                 </button>
               </div>
+              {selectedWatchlistItems.length > WATCHLIST_ADMIN_TABLE_ROW_CAP && (
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+                  <span>
+                    Table shows {selectedWatchlistItemsForTable.length} of {selectedWatchlistItems.length} rows (full lists can freeze the browser). CSV download still includes every row.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSelectedRows((v) => !v)}
+                    className="px-2 py-1 rounded-lg bg-white border border-slate-200 font-bold text-indigo-700 hover:bg-slate-50"
+                  >
+                    {showAllSelectedRows ? 'Show preview only' : 'Show all rows'}
+                  </button>
+                </div>
+              )}
               <div className="overflow-x-auto max-h-80 overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse min-w-[700px]">
                   <thead className="sticky top-0 bg-slate-100 z-10">
@@ -2261,7 +2335,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ sessionUser }) => {
                     </tr>
                   </thead>
                   <tbody>
-                    {selectedWatchlistItems.map((r) => (
+                    {selectedWatchlistItemsForTable.map((r) => (
                       <tr key={`${r.watchlist_id || r.watchlist_date}-${r.symbol}`} className="border-t border-slate-200">
                         <td className="p-2 font-mono font-bold text-slate-800">{r.symbol}</td>
                         <td className="p-2 text-slate-600">{r.company || '—'}</td>

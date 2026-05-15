@@ -677,12 +677,20 @@ def fetch_financial_statements(ticker: str) -> dict[str, Any] | None:
 
 
 def fetch_financials_batch(tickers: list[str], period: str = "1y") -> list[dict[str, Any]]:
-    """Fetch summary for multiple tickers. Returns list of summaries (skips failures)."""
+    """Fetch summary for multiple tickers. Returns list of summaries (skips failures).
+
+    Set env WATCHLIST_API_GC_TICKER=1 to run gc.collect(0) after each ticker (slower; may trim peak RSS).
+    """
+    import gc
+
+    gc_each = os.environ.get("WATCHLIST_API_GC_TICKER", "").strip().lower() in ("1", "true", "yes")
     out = []
     for t in tickers[:5000]:
         s = fetch_financial_summary(t, period=period)
         if s:
             out.append(s)
+        if gc_each:
+            gc.collect(0)
     return out
 
 

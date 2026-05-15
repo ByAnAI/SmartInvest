@@ -74,6 +74,8 @@ function isBrowserFetchNetworkFailure(e: unknown): boolean {
 function isGeminiRecoverableFallbackError(e: unknown): boolean {
   if (isBrowserFetchNetworkFailure(e)) return true;
   const msg = e instanceof Error ? e.message : String(e);
+  /** Wrapped `buildGeminiFailureError` is a plain Error — still signal HF/Ollama fallback. */
+  if (/failed to fetch|networkerror|load failed|fetch.*abort/i.test(msg)) return true;
   if (
     /"status"\s*:\s*404\b|"status"\s*:\s*429\b|"status"\s*:\s*5\d\d\b|UNAVAILABLE|RESOURCE_EXHAUSTED|quota exceeded|high demand/i.test(
       msg
@@ -215,6 +217,25 @@ async function geminiRestGenerateContent(
 
 const INSIGHT_CACHE_TTL_MS = 10 * 60 * 1000;
 const insightCache = new Map<string, { ts: number; data: InsightResponse }>();
+
+/** Default max completion tokens for ticker/sector insights (lower = faster; min 512). */
+const INSIGHT_MAX_OUTPUT_TOKENS_DEFAULT = 1800;
+/** Forex Sentinel observation JSON is large; keep completion smaller for latency. */
+const FOREX_INSIGHT_MAX_OUTPUT_TOKENS_DEFAULT = 1600;
+
+function getInsightMaxOutputTokens(): number {
+  const raw = import.meta.env.VITE_INSIGHT_MAX_OUTPUT_TOKENS;
+  const n = typeof raw === "string" ? Number.parseInt(raw.trim(), 10) : Number.NaN;
+  if (Number.isFinite(n) && n >= 512 && n <= 8192) return n;
+  return INSIGHT_MAX_OUTPUT_TOKENS_DEFAULT;
+}
+
+function jsonInsightTemperature(): number {
+  const raw = import.meta.env.VITE_INSIGHT_TEMPERATURE;
+  const n = typeof raw === "string" ? Number.parseFloat(raw.trim()) : Number.NaN;
+  if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+  return 0.35;
+}
 
 const getHfToken = (): string => {
   /** Must use `import.meta.env.VITE_*` literally — dynamic access breaks Vite’s compile-time injection. */
@@ -387,9 +408,12 @@ async function geminiCallWithRetries<T>(call: (model: string) => Promise<T>): Pr
 async function geminiGenerateText(
   userContent: string,
   maxTokens = 2048,
-  opts?: { jsonOnly?: boolean }
+  opts?: { jsonOnly?: boolean; temperature?: number }
 ): Promise<string> {
   const system = buildSystemPrompt(opts?.jsonOnly);
+
+  const temperature =
+    opts?.temperature ?? (opts?.jsonOnly ? jsonInsightTemperature() : 0.75);
 
   return geminiCallWithRetries(async (model) => {
     const body: Record<string, unknown> = {
@@ -397,6 +421,7 @@ async function geminiGenerateText(
       systemInstruction: { parts: [{ text: system }] },
       generationConfig: {
         maxOutputTokens: maxTokens,
+        temperature,
         ...(opts?.jsonOnly ? { responseMimeType: 'application/json' } : {}),
       },
     };
@@ -433,12 +458,14 @@ function buildSystemPrompt(jsonOnly?: boolean): string {
 async function ollamaGenerateText(
   userContent: string,
   maxTokens = 2048,
-  opts?: { jsonOnly?: boolean }
+  opts?: { jsonOnly?: boolean; temperature?: number }
 ): Promise<string> {
   const root = getOllamaApiRoot();
   const model = getOllamaModelId();
   const system = buildSystemPrompt(opts?.jsonOnly);
   let res: Response;
+  const temperature =
+    opts?.temperature ?? (opts?.jsonOnly ? jsonInsightTemperature() : 0.65);
   try {
     res = await fetch(`${root}/api/chat`, {
       method: 'POST',
@@ -450,7 +477,7 @@ async function ollamaGenerateText(
           { role: 'user', content: userContent },
         ],
         stream: false,
-        options: { num_predict: maxTokens },
+        options: { num_predict: maxTokens, temperature },
       }),
     });
   } catch (e: unknown) {
@@ -552,7 +579,22 @@ function toInsightResponse(parsed: unknown): InsightResponse {
   const sentimentRaw = String(obj.sentiment ?? "").trim().toLowerCase();
   const sentiment =
     sentimentRaw === "bullish" ? "Bullish" : sentimentRaw === "bearish" ? "Bearish" : "Neutral";
-  const summary = String(obj.summary ?? "").trim();
+  const summaryRaw = String(obj.summary ?? "").trim();
+  const executiveSummary = String(obj.executive_summary ?? "").trim();
+  const valuationView = String(obj.valuation_view ?? "").trim();
+  const torchlightView = String(obj.torchlight_view ?? "").trim();
+  const riskView = String(obj.risk_view ?? "").trim();
+  const marketCatalysts = String(obj.market_catalysts ?? "").trim();
+  const extendedReport = String(obj.extended_report ?? "").trim();
+
+  /** Prefer short executive line for the main summary when present; else legacy long summary or stitched sections. */
+  let summary = executiveSummary || summaryRaw;
+  if (!summary) {
+    const stitched = [valuationView, torchlightView, riskView, marketCatalysts].filter(Boolean).join("\n\n");
+    summary = stitched;
+  }
+  if (!summary) summary = "AI returned a partial response; please verify details manually.";
+
   const recommendation = String(obj.recommendation ?? "").trim();
   const pros = Array.isArray(obj.pros)
     ? obj.pros.map((v) => String(v).trim()).filter(Boolean)
@@ -571,15 +613,22 @@ function toInsightResponse(parsed: unknown): InsightResponse {
   const confidence = Number.isFinite(confidenceNum)
     ? Math.max(0, Math.min(100, confidenceNum))
     : 50;
-  return {
+
+  const out: InsightResponse = {
     sentiment,
-    summary: summary || "AI returned a partial response; please verify details manually.",
+    summary,
     pros: pros.length > 0 ? pros : ["Potential upside exists, but details were incomplete."],
     cons: cons.length > 0 ? cons : ["Model response format was incomplete; risk assessment may be limited."],
     recommendation:
       recommendation || "Hold / review manually due to incomplete AI response format.",
     confidence,
   };
+  if (valuationView) out.valuation_view = valuationView;
+  if (torchlightView) out.torchlight_view = torchlightView;
+  if (riskView) out.risk_view = riskView;
+  if (marketCatalysts) out.market_catalysts = marketCatalysts;
+  if (extendedReport) out.extended_report = extendedReport;
+  return out;
 }
 
 function fallbackInsightFromText(raw: string): InsightResponse {
@@ -626,11 +675,13 @@ function fallbackInsightFromText(raw: string): InsightResponse {
 async function hfGenerateTextViaHfRouter(
   userContent: string,
   maxTokens = 2048,
-  opts?: { jsonOnly?: boolean }
+  opts?: { jsonOnly?: boolean; temperature?: number }
 ): Promise<string> {
   const token = getHfToken();
   const model = getHfModelId();
   const system = buildSystemPrompt(opts?.jsonOnly);
+  const temperature =
+    opts?.temperature ?? (opts?.jsonOnly ? jsonInsightTemperature() : 0.65);
 
   const res = await fetch(HF_CHAT_COMPLETIONS_URL, {
     method: "POST",
@@ -645,6 +696,7 @@ async function hfGenerateTextViaHfRouter(
         { role: "user", content: userContent },
       ],
       max_tokens: maxTokens,
+      temperature,
     }),
   });
 
@@ -719,7 +771,7 @@ async function hfGenerateTextViaHfRouter(
 async function hfGenerateText(
   userContent: string,
   maxTokens = 2048,
-  opts?: { jsonOnly?: boolean }
+  opts?: { jsonOnly?: boolean; temperature?: number }
 ): Promise<string> {
   const provider = getLlmProvider();
   if (provider === 'ollama') {
@@ -762,7 +814,17 @@ export async function generateJsonCompletion(userContent: string, maxTokens = 40
   return hfGenerateText(userContent, maxTokens, { jsonOnly: true });
 }
 
-export const getStockInsight = async (symbol: string, contextualPrompt?: string): Promise<InsightResponse> => {
+export type StockInsightRequestOpts = {
+  /** Override max completion tokens (default from VITE_INSIGHT_MAX_OUTPUT_TOKENS or 2400). */
+  maxOutputTokens?: number;
+  skipCache?: boolean;
+};
+
+export const getStockInsight = async (
+  symbol: string,
+  contextualPrompt?: string,
+  requestOpts?: StockInsightRequestOpts
+): Promise<InsightResponse> => {
   const base =
     contextualPrompt && contextualPrompt.trim()
       ? contextualPrompt.trim()
@@ -779,12 +841,17 @@ export const getStockInsight = async (symbol: string, contextualPrompt?: string)
 
   const cacheKey = `${symbol.toUpperCase()}::${base}`;
   const now = Date.now();
-  const cached = insightCache.get(cacheKey);
-  if (cached && now - cached.ts < INSIGHT_CACHE_TTL_MS) {
-    return cached.data;
+  const maxOut = requestOpts?.maxOutputTokens ?? getInsightMaxOutputTokens();
+  const jsonOpts = { jsonOnly: true as const, temperature: jsonInsightTemperature() };
+
+  if (!requestOpts?.skipCache) {
+    const cached = insightCache.get(cacheKey);
+    if (cached && now - cached.ts < INSIGHT_CACHE_TTL_MS) {
+      return cached.data;
+    }
   }
 
-  const raw = await hfGenerateText(jsonTask, 4096, { jsonOnly: true });
+  const raw = await hfGenerateText(jsonTask, maxOut, jsonOpts);
   if (!raw.trim()) {
     throw new Error("AI provider returned an empty response. Please retry.");
   }
@@ -792,12 +859,16 @@ export const getStockInsight = async (symbol: string, contextualPrompt?: string)
   try {
     const parsed = parseJsonWithRecovery(raw);
     const normalized = toInsightResponse(parsed);
-    insightCache.set(cacheKey, { ts: now, data: normalized });
+    if (!requestOpts?.skipCache) {
+      insightCache.set(cacheKey, { ts: now, data: normalized });
+    }
     return normalized;
   } catch (e) {
     console.error("Failed to parse insight JSON", e);
     const fallback = fallbackInsightFromText(raw);
-    insightCache.set(cacheKey, { ts: now, data: fallback });
+    if (!requestOpts?.skipCache) {
+      insightCache.set(cacheKey, { ts: now, data: fallback });
+    }
     return fallback;
   }
 };
@@ -813,7 +884,7 @@ export const getStockInsightsBatch = async (tickers: string[]): Promise<Record<s
     'Return only valid JSON as: {"items":[{"ticker":"AAPL","insight":"..."}]}',
   ].join("\n");
 
-  const raw = await hfGenerateText(task, 2048, { jsonOnly: true });
+  const raw = await hfGenerateText(task, 1024, { jsonOnly: true, temperature: jsonInsightTemperature() });
   const jsonStr = parseModelJson(raw);
   if (!jsonStr) return {};
 
@@ -888,7 +959,8 @@ export const getForexSentinelInsight = async (
     'Return ONLY valid JSON with keys: sentiment (one of Bullish, Bearish, Neutral), summary, pros (array of strings), cons (array of strings), recommendation (string), confidence (number 0-100).',
   ].join('\n');
 
-  const raw = await hfGenerateText(task, 4096, { jsonOnly: true });
+  const maxOut = Math.min(getInsightMaxOutputTokens(), FOREX_INSIGHT_MAX_OUTPUT_TOKENS_DEFAULT);
+  const raw = await hfGenerateText(task, maxOut, { jsonOnly: true, temperature: jsonInsightTemperature() });
   if (!raw.trim()) {
     throw new Error('Forex Sentinel returned an empty response. Please retry.');
   }

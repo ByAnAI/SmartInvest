@@ -14,6 +14,9 @@
  * Env:
  *   VITE_WATCHLIST_API_URL   (default http://127.0.0.1:8000)
  *   VITE_WATCHLIST_FINANCIALS_CHUNK  (default 8)
+ *   WATCHLIST_CLI_PARALLEL   (default: min(32, CPU count); concurrent Yahoo batch HTTP requests)
+ *   WATCHLIST_CLI_LOW_MEM    (1/true) cap parallel at 2 to lower peak RAM in the Watchlist API process
+ *   WATCHLIST_CLI_WORKER_BARS  (1/true) tqdm-style one line per parallel worker (TTY only)
  *   WATCHLIST_CLI_OUTPUT_DIR  (optional; default: <project>/watchlist)
  */
 
@@ -143,6 +146,127 @@ function resolveFinancialsChunkSize() {
   return 8;
 }
 
+/** Concurrent Yahoo `/api/financials/batch` calls (I/O overlap). Capped to avoid hammering Yahoo / your API. */
+function resolveParallelFromEnv() {
+  let n;
+  const raw = process.env.WATCHLIST_CLI_PARALLEL;
+  if (raw != null && String(raw).trim() !== '') {
+    const v = Number(raw);
+    if (Number.isFinite(v) && v >= 1) n = Math.max(1, Math.min(32, Math.floor(v)));
+  }
+  if (n == null) {
+    const cores = os.cpus()?.length || 8;
+    n = Math.max(1, Math.min(32, cores));
+  }
+  /** Fewer in-flight HTTP batches → lower peak RAM in uvicorn/yfinance (sync routes may run in parallel threads). */
+  if (truthyEnv(process.env.WATCHLIST_CLI_LOW_MEM)) {
+    n = Math.min(n, 2);
+  }
+  return n;
+}
+
+function truthyEnv(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes';
+}
+
+function resolveWorkerBars(cliFlag) {
+  if (cliFlag) return true;
+  return truthyEnv(process.env.WATCHLIST_CLI_WORKER_BARS);
+}
+
+/**
+ * tqdm-like multi-line display: one line per parallel *async worker* (W0…), not literal CPU cores.
+ * Redraws in place on a TTY via ANSI cursor moves.
+ */
+class MultiWorkerTqdmTTY {
+  constructor(workerCount, totalChunks) {
+    this.workerCount = workerCount;
+    this.totalChunks = totalChunks;
+    this.tty = process.stdout.isTTY === true;
+    this.state = Array.from({ length: workerCount }, () => ({
+      busy: false,
+      done: 0,
+      chunkIndex: 0,
+      preview: '',
+      lastBatchSec: '',
+    }));
+    this.renderQueued = false;
+    this.drawn = false;
+  }
+
+  buildLines() {
+    const lines = [];
+    const cap = Math.max(1, Math.ceil(this.totalChunks / this.workerCount));
+    for (let w = 0; w < this.workerCount; w++) {
+      const st = this.state[w];
+      const denom = Math.max(cap, st.done);
+      const bar = formatProgressBar(st.done, denom);
+      const pct = denom ? Math.round((100 * Math.min(st.done, denom)) / denom) : 0;
+      if (st.busy) {
+        const p = (st.preview || '').slice(0, 44);
+        lines.push(
+          `W${w} ${pct}%|${bar}| ${st.done}/${denom}  #${st.chunkIndex} [${p}] …`
+        );
+      } else {
+        const tail = st.lastBatchSec ? ` last ${st.lastBatchSec}s` : '';
+        lines.push(`W${w} ${pct}%|${bar}| ${st.done}/${denom}  idle${tail}`);
+      }
+    }
+    return lines;
+  }
+
+  queueRender() {
+    if (!this.tty) return;
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    queueMicrotask(() => {
+      this.renderQueued = false;
+      this.render();
+    });
+  }
+
+  render() {
+    if (!this.tty) return;
+    const lines = this.buildLines();
+    if (!this.drawn) {
+      this.drawn = true;
+      for (const line of lines) {
+        process.stdout.write('\x1b[2K\r' + line + '\n');
+      }
+    } else {
+      process.stdout.write('\x1b[' + lines.length + 'A');
+      for (const line of lines) {
+        process.stdout.write('\x1b[2K\r' + line + '\n');
+      }
+    }
+  }
+
+  setBusy(w, chunkIndex, tickers) {
+    const st = this.state[w];
+    st.busy = true;
+    st.chunkIndex = chunkIndex;
+    const arr = tickers || [];
+    st.preview =
+      arr.length <= 4 ? arr.join(',') : `${arr.slice(0, 3).join(',')},+${arr.length - 3}`;
+    this.queueRender();
+  }
+
+  setIdle(w, elapsedMs, rowsLen) {
+    const st = this.state[w];
+    st.busy = false;
+    st.done += 1;
+    st.lastBatchSec = (elapsedMs / 1000).toFixed(1);
+    st.preview = `${rowsLen} rows`;
+    this.queueRender();
+  }
+
+  finish() {
+    if (!this.tty || !this.drawn) return;
+    process.stdout.write('\n');
+  }
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -257,59 +381,151 @@ function formatProgressBar(done, total, width = 22) {
   return '[' + '█'.repeat(filled) + '░'.repeat(width - filled) + ']';
 }
 
-async function fetchFinancialsBatchChunked(baseUrl, tickers, chunkSize, options = {}) {
-  const { quiet = false } = options;
-  const normalized = tickers.map((t) => String(t).toUpperCase().trim()).filter(Boolean);
-  const out = [];
-  const totalChunks = Math.max(1, Math.ceil(normalized.length / chunkSize));
+async function postFinancialsBatch(baseUrl, chunk) {
+  const res = await fetchWatchlistApi(baseUrl, '/api/financials/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tickers: chunk }),
+  });
+  return readWatchlistJson(res);
+}
 
+async function fetchFinancialsBatchWithRetries(baseUrl, chunk, quiet, logLabel, retrySink) {
+  let lastErr;
+  for (let attempt = 0; attempt < CHUNK_ATTEMPTS; attempt++) {
+    if ((!quiet || retrySink) && attempt > 0) {
+      const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      const line = `     … ${logLabel}: retry ${attempt + 1}/${CHUNK_ATTEMPTS} (${msg.slice(0, 120)}${msg.length > 120 ? '…' : ''})`;
+      if (retrySink) retrySink(line);
+      else console.info(line);
+    }
+    try {
+      const data = await postFinancialsBatch(baseUrl, chunk);
+      if (Array.isArray(data)) return data;
+      return [];
+    } catch (e) {
+      lastErr = e;
+      if (attempt < CHUNK_ATTEMPTS - 1) await sleep(900 * (attempt + 1));
+    }
+  }
+  throw lastErr;
+}
+
+async function fetchFinancialsBatchChunked(baseUrl, tickers, chunkSize, options = {}) {
+  const { quiet = false, parallel: parallelOverride, workerBars: workerBarsOpt } = options;
+  const parallel =
+    parallelOverride != null && Number.isFinite(parallelOverride) && parallelOverride >= 1
+      ? Math.max(1, Math.min(32, Math.floor(parallelOverride)))
+      : resolveParallelFromEnv();
+
+  const normalized = tickers.map((t) => String(t).toUpperCase().trim()).filter(Boolean);
+  const chunks = [];
   for (let i = 0; i < normalized.length; i += chunkSize) {
-    const chunk = normalized.slice(i, i + chunkSize);
-    const chunkIndex = Math.floor(i / chunkSize) + 1;
-    const t0 = Date.now();
-    let lastErr;
-    for (let attempt = 0; attempt < CHUNK_ATTEMPTS; attempt++) {
+    chunks.push(normalized.slice(i, i + chunkSize));
+  }
+  const totalChunks = Math.max(1, chunks.length);
+  const workerCount = Math.min(parallel, chunks.length);
+  const useWorkerBars = !!(workerBarsOpt && !quiet && parallel > 1 && totalChunks > 1);
+  const display = useWorkerBars ? new MultiWorkerTqdmTTY(workerCount, totalChunks) : null;
+  const showWorkerTty = display && display.tty;
+
+  if (parallel <= 1 || totalChunks <= 1) {
+    const out = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const chunkIndex = i + 1;
+      const t0 = Date.now();
       if (!quiet) {
-        if (attempt === 0) {
-          const preview =
-            chunk.length <= 6 ? chunk.join(', ') : `${chunk.slice(0, 5).join(', ')}, +${chunk.length - 5} more`;
-          console.info(
-            `  ▶ Yahoo batch ${chunkIndex}/${totalChunks}  [${preview}]  requesting…`
-          );
-        } else {
-          const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-          console.info(
-            `     … retry ${attempt + 1}/${CHUNK_ATTEMPTS} (${msg.slice(0, 120)}${msg.length > 120 ? '…' : ''})`
-          );
-        }
+        const preview =
+          chunk.length <= 6 ? chunk.join(', ') : `${chunk.slice(0, 5).join(', ')}, +${chunk.length - 5} more`;
+        console.info(`  ▶ Yahoo batch ${chunkIndex}/${totalChunks}  [${preview}]  requesting…`);
       }
-      try {
-        const res = await fetchWatchlistApi(baseUrl, '/api/financials/batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tickers: chunk }),
-        });
-        const data = await readWatchlistJson(res);
-        if (Array.isArray(data)) out.push(...data);
-        lastErr = undefined;
-        const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
-        const pct = Math.round((100 * chunkIndex) / totalChunks);
-        if (!quiet) {
-          const bar = formatProgressBar(chunkIndex, totalChunks);
-          const n = Array.isArray(data) ? data.length : 0;
-          console.info(
-            `  ${bar} ${pct}%  chunk ${chunkIndex}/${totalChunks}  ${n} rows in ${elapsedSec}s`
-          );
-        }
-        break;
-      } catch (e) {
-        lastErr = e;
-        if (attempt < CHUNK_ATTEMPTS - 1) await sleep(900 * (attempt + 1));
+      const data = await fetchFinancialsBatchWithRetries(
+        baseUrl,
+        chunk,
+        quiet,
+        `batch ${chunkIndex}/${totalChunks}`,
+        null
+      );
+      if (Array.isArray(data)) out.push(...data);
+      const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+      const pct = Math.round((100 * chunkIndex) / totalChunks);
+      if (!quiet) {
+        const bar = formatProgressBar(chunkIndex, totalChunks);
+        const n = data.length;
+        console.info(`  ${bar} ${pct}%  chunk ${chunkIndex}/${totalChunks}  ${n} rows in ${elapsedSec}s`);
       }
     }
-    if (lastErr !== undefined) throw lastErr;
+    return out;
   }
-  return out;
+
+  const poolStart = Date.now();
+  if (!quiet) {
+    if (showWorkerTty) {
+      console.info(
+        `  tqdm-style bars: one line per async worker (W0–W${workerCount - 1}), ${totalChunks} batches, parallel ${workerCount}. (Not literal CPU-core meters.)\n`
+      );
+      display.queueRender();
+    } else {
+      console.info(
+        `  (parallel: ${workerCount} concurrent Yahoo batch requests, ${totalChunks} batches total)\n`
+      );
+    }
+  }
+
+  const perChunkRows = new Array(chunks.length);
+  let completed = 0;
+  let cursor = 0;
+
+  const retrySink =
+    showWorkerTty &&
+    ((line) => {
+      process.stderr.write('\n' + line + '\n');
+      display.queueRender();
+    });
+
+  async function workerSlot(workerId) {
+    while (true) {
+      const i = cursor++;
+      if (i >= chunks.length) break;
+      const chunk = chunks[i];
+      const chunkIndex = i + 1;
+      const t0 = Date.now();
+      if (showWorkerTty) display.setBusy(workerId, chunkIndex, chunk);
+      const data = await fetchFinancialsBatchWithRetries(
+        baseUrl,
+        chunk,
+        quiet,
+        `batch ${chunkIndex}/${totalChunks}`,
+        retrySink || null
+      );
+      perChunkRows[i] = Array.isArray(data) ? data : [];
+      completed++;
+      if (!quiet) {
+        if (showWorkerTty) {
+          display.setIdle(workerId, Date.now() - t0, perChunkRows[i].length);
+        } else {
+          const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+          const bar = formatProgressBar(completed, totalChunks);
+          const pct = Math.round((100 * completed) / totalChunks);
+          const n = perChunkRows[i].length;
+          console.info(
+            `  ${bar} ${pct}%  ${completed}/${totalChunks} done  batch #${chunkIndex}  ${n} rows in ${elapsedSec}s`
+          );
+        }
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, (_, wid) => workerSlot(wid)));
+
+  if (display) display.finish();
+
+  if (!quiet) {
+    console.info(`  Wall time for all Yahoo batches: ${((Date.now() - poolStart) / 1000).toFixed(1)}s\n`);
+  }
+
+  return perChunkRows.flat();
 }
 
 function yahooRowToFields(r) {
@@ -477,6 +693,10 @@ function parseArgs(argv) {
     outDir: null,
     help: false,
     quiet: false,
+    /** null = use WATCHLIST_CLI_PARALLEL or CPU count */
+    parallel: null,
+    /** tqdm-style one line per parallel worker (TTY); --worker-bars / -B or WATCHLIST_CLI_WORKER_BARS */
+    workerBars: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -486,6 +706,10 @@ function parseArgs(argv) {
     else if (a === '--quiet' || a === '-q') out.quiet = true;
     else if (a === '--limit') out.limit = Math.max(0, parseInt(argv[++i] || '0', 10) || 0);
     else if (a === '--out') out.outDir = expandHome(argv[++i] || '');
+    else if (a === '--parallel') {
+      const n = parseInt(argv[++i] || '8', 10);
+      out.parallel = Number.isFinite(n) && n >= 1 ? Math.min(32, n) : 8;
+    } else if (a === '--worker-bars' || a === '-B') out.workerBars = true;
   }
   if (out.full) out.limit = 0;
   return out;
@@ -502,13 +726,23 @@ Options:
   --limit N        Max tickers from SP500 list (default: all; ignored if --full)
   --symbols-only   Skip Yahoo financials; symbols + date only (fast)
   --out DIR        Output directory (default: <project>/watchlist/ or WATCHLIST_CLI_OUTPUT_DIR)
+  --parallel N     Concurrent Yahoo batch HTTP requests (default: env or CPU count, max 32)
+  --worker-bars, -B  tqdm-style bar per parallel worker line (W0…); TTY only. Env: WATCHLIST_CLI_WORKER_BARS=1
   -q, --quiet      No progress lines (still prints final paths)
   -h, --help       This message
 
 Env:
   VITE_WATCHLIST_API_URL
   VITE_WATCHLIST_FINANCIALS_CHUNK
+  WATCHLIST_CLI_PARALLEL   (default: min(32, number of CPUs); use 1 to force sequential)
+  WATCHLIST_CLI_LOW_MEM    (1/true) cap parallel at 2 (less peak RAM in uvicorn/yfinance)
+  WATCHLIST_CLI_WORKER_BARS  (1/true) tqdm-style multi-line worker progress (TTY)
   WATCHLIST_CLI_OUTPUT_DIR
+
+Measure Node peak RSS (Linux): /usr/bin/time -v node scripts/watchlist-today-cli.mjs --limit 50
+  (see "Maximum resident set size" in kB)
+
+Watchlist API (Python, optional): WATCHLIST_API_GC_TICKER=1 — run gc after each ticker inside a batch (slower; may reduce RSS fragmentation).
 
 Writes:
   watchlist-{YYYY-MM-DD-HHMMSS}.csv
@@ -554,13 +788,16 @@ async function main() {
   if (!args.symbolsOnly) {
     const chunk = resolveFinancialsChunkSize();
     const totalChunks = Math.max(1, Math.ceil(rows.length / chunk));
+    const parallelUsed = args.parallel ?? resolveParallelFromEnv();
     if (!quiet) {
       console.info(
-        `[2/3] Yahoo financials — ${rows.length} tickers in ${totalChunks} batch(es) of up to ${chunk} …\n`
+        `[2/3] Yahoo financials — ${rows.length} tickers in ${totalChunks} batch(es) of up to ${chunk} (parallel ${parallelUsed}) …\n`
       );
     }
     const yahoo = await fetchFinancialsBatchChunked(base, rows.map((r) => r.ticker), chunk, {
       quiet,
+      parallel: args.parallel,
+      workerBars: args.quiet ? false : resolveWorkerBars(args.workerBars),
     });
     rows = mergeYahoo(rows, yahoo);
     if (!quiet) console.info('');

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { SP500_TICKERS } from './SP500Data';
 import { NASDAQ_TICKERS } from './NasdaqData';
+import { isSp500OnlyMode } from '../utils/sp500OnlyMode';
 import { FOREX_TICKERS } from './ForexData';
 import { getForexSentinelInsight, getStockInsight } from '../services/geminiService';
 import { fetchForexSentinelContext } from '../services/forexSentinel';
@@ -19,6 +20,7 @@ import {
 import { supabase } from '../services/supabase';
 import { fetchFinancialsBatchChunked, fetchWatchlistApi, getDefaultWatchlistApiBase, readWatchlistJson } from '../utils/watchlistApiFetch';
 import { DailyWatchlist, DailyWatchlistItem, InsightResponse, PortfolioItem } from '../types';
+import { deriveWatchlistSignalAnalysis, type WatchlistSignalBundle } from '../utils/watchlistSignalAnalysis';
 
 type WatchlistRow = {
   ticker: string;
@@ -50,6 +52,8 @@ type WatchlistRow = {
   torchlight_execution_feasibility?: number | null;
   torchlight_risk_adjusted_alpha?: number | null;
   ctr_total_return?: number | null;
+  ctr_price_return?: number | null;
+  ctr_cash_return?: number | null;
   ctr_annualized?: number | null;
   torchlight_ctr_score?: number | null;
   risk_volatility_annual?: number | null;
@@ -66,6 +70,16 @@ type WatchlistRow = {
   risk_beta?: number | null;
   risk_summary_score?: number | null;
 };
+
+function insightConditionDisplayLabel(sentiment: InsightResponse['sentiment']): string {
+  return sentiment === 'Neutral' ? 'Hold' : sentiment;
+}
+
+function insightConditionTextClass(sentiment: InsightResponse['sentiment']): string {
+  if (sentiment === 'Bullish') return 'text-emerald-600';
+  if (sentiment === 'Bearish') return 'text-rose-600';
+  return 'text-amber-600';
+}
 
 function mapDailyItemsToWatchlistRows(savedItems: DailyWatchlistItem[]): WatchlistRow[] {
   return savedItems.map((r) => ({
@@ -98,6 +112,8 @@ function mapDailyItemsToWatchlistRows(savedItems: DailyWatchlistItem[]): Watchli
     torchlight_execution_feasibility: r.torchlight_execution_feasibility ?? null,
     torchlight_risk_adjusted_alpha: r.torchlight_risk_adjusted_alpha ?? null,
     ctr_total_return: r.ctr_total_return ?? null,
+    ctr_price_return: r.ctr_price_return ?? null,
+    ctr_cash_return: r.ctr_cash_return ?? null,
     ctr_annualized: r.ctr_annualized ?? null,
     torchlight_ctr_score: r.torchlight_ctr_score ?? null,
     risk_volatility_annual: r.risk_volatility_annual ?? null,
@@ -233,6 +249,9 @@ function downloadTopLowInsightsCsv(
     'risk_volatility_annual',
     'risk_max_drawdown',
     'risk_beta',
+    'ctr_total_return',
+    'ctr_price_return',
+    'ctr_cash_return',
     'ctr_annualized',
   ] as const;
   const header = cols.map((c) => escapeCsvCell(c)).join(',');
@@ -255,6 +274,9 @@ function downloadTopLowInsightsCsv(
       risk_volatility_annual: r.risk_volatility_annual ?? '',
       risk_max_drawdown: r.risk_max_drawdown ?? '',
       risk_beta: r.risk_beta ?? '',
+      ctr_total_return: r.ctr_total_return ?? '',
+      ctr_price_return: r.ctr_price_return ?? '',
+      ctr_cash_return: r.ctr_cash_return ?? '',
       ctr_annualized: r.ctr_annualized ?? '',
     };
     return cols.map((c) => escapeCsvCell(vals[c])).join(',');
@@ -309,6 +331,8 @@ function buildWatchlistQuantitativeDataBlock(r: WatchlistRow): string {
 
   lines.push('--- Shareholder return (CTR) ---');
   L('CTR Total return (fraction → % in UI)', p(r.ctr_total_return));
+  L('CTR Price return (fraction → % in UI)', p(r.ctr_price_return));
+  L('CTR Cash return (fraction → % in UI)', p(r.ctr_cash_return));
   L('CTR Annualized', p(r.ctr_annualized));
   L('Torchlight CTR composite score', num(r.torchlight_ctr_score, 2));
 
@@ -404,6 +428,8 @@ function buildSectorAggregateMetricsBlock(sector: string, rows: WatchlistRow[]):
 
   lines.push('--- Shareholder return (CTR) — sector averages ---');
   pushSectorAvgLine(lines, rows, nSector, 'Avg CTR Total return (fraction)', (r) => r.ctr_total_return, pAvg);
+  pushSectorAvgLine(lines, rows, nSector, 'Avg CTR Price return (fraction)', (r) => r.ctr_price_return, pAvg);
+  pushSectorAvgLine(lines, rows, nSector, 'Avg CTR Cash return (fraction)', (r) => r.ctr_cash_return, pAvg);
   pushSectorAvgLine(lines, rows, nSector, 'Avg CTR Annualized', (r) => r.ctr_annualized, pAvg);
   pushSectorAvgLine(lines, rows, nSector, 'Avg Torchlight CTR composite', (r) => r.torchlight_ctr_score, (m) => m.toFixed(2));
 
@@ -461,12 +487,35 @@ function buildContextualInsightPrompt(
   row: WatchlistRow | null,
   finnhubNewsBlock: string
 ): string {
+  const extendedReportSpec = row
+    ? 'extended_report — string, REQUIRED: 6–10 paragraphs separated by two newline characters (\\n\\n), ~280–420 words total, plain prose only (no markdown tables). First paragraph must name the ticker symbol and company and restate the same stance as your JSON sentiment/recommendation in one cohesive lead. Then expand: (1) valuation vs current price with cited IV metrics (2) Torchlight headline + sub-scores + every CTR leg from the block (3) risk stack and what would invalidate the view (4) today’s Finnhub headline catalyst or explicitly none (5) time horizon / monitoring checklist. If any metric is N/A, say so. Numbers must match the data block or TODAY news block only.'
+    : 'extended_report — string, REQUIRED: 3–5 paragraphs separated by \\n\\n (~100–170 words). Name the ticker; watchlist fundamentals were not loaded — state that clearly, do not invent numbers, and anchor the rest only on the Finnhub TODAY block plus cautious general framing.';
+
+  const densityRule = row
+    ? 'Be dense and factual; no filler. Numbers must match the data block.'
+    : 'Be factual; do not invent fundamentals beyond the Finnhub block.';
+
   const jsonFooter =
-    'Return ONLY valid JSON with keys: sentiment (exactly one of Bullish, Bearish, Neutral), summary (string), pros (array of strings), cons (array of strings), recommendation (string), confidence (integer 0-100).';
+    [
+      'Return ONLY valid JSON with these keys (no markdown, no extra keys):',
+      'sentiment — exactly one of: Bullish, Bearish, Neutral',
+      'confidence — integer 0–100',
+      'The app UI already renders a deterministic IV (green) and risk (red) signal strip from the same data — synthesize and add nuance; do not duplicate those bullets verbatim.',
+      'executive_summary — max ~50 words: tie IV vs price, Torchlight headline, and risk posture using ONLY numbers from the data block.',
+      'valuation_view — max ~60 words: IV DCF, IV RI, IV Multiples, IV Ensemble, IV Quality, IV Upside % vs Current price; discount/premium vs mark with cited figures.',
+      'torchlight_view — max ~75 words: Torchlight headline, rank_factors line, key sub-scores and **all CTR legs** (total, price, cash, annualized) + Torchlight CTR composite with cited figures.',
+      'risk_view — max ~60 words: risk summary score, Beta, Sharpe, Sortino, vols, max drawdown, VaR / CVaR — cite figures.',
+      'market_catalysts — max ~40 words: ONLY the TODAY Finnhub block below; if empty or no articles, write exactly: No ticker-specific headlines in the provided TODAY block.',
+      'pros — array of exactly 3 strings; each must name a metric and its value from the data block.',
+      'cons — array of exactly 3 strings; same rule.',
+      'recommendation — max ~65 words: reconcile IV vs price, Torchlight, CTR, risk, and catalysts (if any).',
+      extendedReportSpec,
+      densityRule,
+    ].join('\n');
 
   const newsSection = [
     '',
-    '=== TODAY NEWS (Finnhub company-news API; only today and at most top 2 latest ticker-specific articles) ===',
+    '=== TODAY NEWS (Finnhub company-news API; today only, latest 1 article) ===',
     finnhubNewsBlock,
     '=== END TODAY NEWS ===',
     '',
@@ -474,9 +523,9 @@ function buildContextualInsightPrompt(
 
   if (!row) {
     return [
-      `Analyze ticker ${symbol} using watchlist quantitative context and today's top 2 Finnhub ticker-news items only.`,
+      `Analyze ticker ${symbol} using watchlist quantitative context and today's Finnhub ticker-news items only.`,
       'Do not use any external/web/news beyond the provided Finnhub block.',
-      'Focus on ticker condition (valuation, trend, quality) and risk analysis; reference today news only if provided.',
+      'If you lack the numeric data block below, still return valid JSON; use neutral stance and explain missing data in executive_summary.',
       newsSection,
       jsonFooter,
     ].join('\n');
@@ -487,26 +536,16 @@ function buildContextualInsightPrompt(
   const dataBlock = buildWatchlistQuantitativeDataBlock(row);
 
   return [
-    `You are generating an equity RESEARCH REPORT for ${company} (${symbol}), sector: ${sector}.`,
+    `You are generating an equity RESEARCH BRIEF for ${company} (${symbol}), sector: ${sector}.`,
     '',
-    '=== AUTHORITATIVE WATCHLIST NUMBERS (you MUST anchor the entire report to these fields; cite figures explicitly; do not use external data) ===',
+    '=== AUTHORITATIVE WATCHLIST NUMBERS (anchor every figure here; no external data) ===',
     dataBlock,
     '=== END DATA ===',
     newsSection,
-    'REPORT RULES:',
-    '1) Field "summary": Write a detailed multi-section narrative (several paragraphs). It MUST:',
-    '   (a) Valuation / IV — interpret IV DCF, IV RI, IV Multiples, IV Ensemble, IV Quality, IV Upside % versus Current price; explain implied discount or premium.',
-    '   (b) CTR — interpret CTR Total Return and CTR Annualized and how they relate to the Torchlight CTR score when present.',
-    '   (c) Torchlight — interpret headline Torchlight score, rank_factors text, and EVERY Torchlight sub-score listed (momentum, valuation edge, quality, growth, sentiment, macro fit, execution, risk-adjusted alpha).',
-    '   (d) Risk — interpret Risk summary, Beta, Sharpe, Sortino, daily/annual volatility, max drawdown, VaR variants, CVaR as provided.',
-    '   (e) Fundamentals — weave in revenue, profitability, cash flows, and balance sheet scale from the financial statement lines where present.',
-    '   (f) Explicitly state current ticker condition (strong/neutral/weak) and key risk posture.',
-    '   (g) Use only the provided TODAY Finnhub block (max 2 items) for any catalyst/news references.',
-    '2) Field "pros": at least 3 bullets; each bullet MUST reference at least one named metric and its value from the data block (when metrics exist).',
-    '3) Field "cons": at least 3 bullets; same requirement — concrete numbers where metrics exist.',
-    '4) Field "recommendation": one paragraph reconciling IV vs price, Torchlight, CTR, risk, and today-news catalysts (if provided).',
-    '5) Do not invent numeric metrics — use only watchlist numbers above for figures.',
-    '6) Do NOT use or mention external news/headlines/web context outside the provided TODAY Finnhub block.',
+    'RULES:',
+    '- Every numeric claim must appear verbatim (or same rounding) in the data block.',
+    '- Do not repeat the entire data table in prose; interpret and compare (e.g. IV ensemble vs price, upside %).',
+    '- If a metric is N/A, say so briefly instead of guessing.',
     '',
     jsonFooter,
   ].join('\n');
@@ -522,24 +561,27 @@ function buildSectorInsightPrompt(sector: string, rows: WatchlistRow[]): string 
 
   const topTickers = top.map((r) => `${r.ticker}${r.company ? `(${r.company})` : ''}`).join(', ') || 'N/A';
   return [
-    `System: Generate a sector-level investment REPORT for ${sector}.`,
+    `System: Generate a sector-level investment BRIEF for ${sector}.`,
     '',
     aggregateBlock,
     '',
     `Constituents: ${valid.length} companies in this sector in the current universe.`,
-    `Top representatives by Torchlight (for narrative color — report must still center on the sector averages above): ${topTickers}.`,
+    `Top representatives by Torchlight (for narrative color — still center on sector averages): ${topTickers}.`,
     '',
-    'REPORT RULES:',
-    '1) Anchor the entire analysis on the sector column averages block: interpret average valuation (IV lines), average profitability/scale (financial statement lines), average Torchlight profile, average risk/return (CTR, Sharpe, drawdown, VaR, beta, etc.).',
-    '2) Where a metric shows "mean over k/N companies", acknowledge coverage (sparse data vs full sector).',
-    '3) summary: several paragraphs covering sector valuation vs implied upside, typical risk posture, typical fundamental scale/profitability, and how leadership (top Torchlight names) relates to the averages.',
-    '4) pros: at least 4 bullets — each must cite specific averaged metrics and values from the sector block.',
-    '5) cons: at least 4 bullets — same requirement, grounded in the averages.',
-    '6) Do not invent figures; use only numbers from the sector averages section and company count.',
-    '7) Do not use external news/headlines/web context; rely only on the provided sector averages and constituent coverage.',
-    '8) No buy/sell/hold on individual stocks. Sector policy: sentiment Bullish | Neutral | Bearish; recommendation must be a sector stance label (e.g. "Bullish sector stance"), not "Buy/Sell/Hold".',
+    'RULES:',
+    '1) Anchor on the sector averages block; cite "mean over k/N" where shown.',
+    '2) Return ONLY valid JSON (no markdown) with keys:',
+    '   sentiment (Bullish | Bearish | Neutral), confidence (0-100),',
+    '   executive_summary (~70 words): sector valuation vs upside, typical risk, typical Torchlight posture.',
+    '   valuation_view (~90 words): sector IV averages vs typical mark.',
+    '   torchlight_view (~100 words): sector Torchlight averages and what they imply.',
+    '   risk_view (~90 words): sector risk/return averages (Sharpe, drawdown, VaR, beta, vol).',
+    '   market_catalysts — must be exactly this sentence: Sector aggregates only; no headline news in this prompt.',
+    '   pros (3 strings) and cons (3 strings) — each cites specific averaged metrics from the block.',
+    '   recommendation (~85 words): sector stance (not buy/sell on individual names).',
+    '3) No external web/news. No invented figures.',
     '',
-    'Output format: return only valid JSON with keys sentiment, summary, pros (array), cons (array), recommendation, confidence (0-100).',
+    'Output format: return only valid JSON with the keys listed above.',
   ].join('\n');
 }
 
@@ -614,6 +656,8 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   const [symbol, setSymbol] = useState('');
   const [loading, setLoading] = useState(false);
   const [insight, setInsight] = useState<InsightResponse | null>(null);
+  /** Deterministic IV / risk / Torchlight signals from the active watchlist row (instant, no LLM). */
+  const [signalAnalysis, setSignalAnalysis] = useState<WatchlistSignalBundle | null>(null);
   const [error, setError] = useState('');
   const [watchlists, setWatchlists] = useState<DailyWatchlist[]>([]);
   const [selectedWatchlistId, setSelectedWatchlistId] = useState<string>('');
@@ -623,7 +667,9 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   const [libraryUploadBusy, setLibraryUploadBusy] = useState(false);
   const [watchlistRows, setWatchlistRows] = useState<WatchlistRow[]>([]);
   const [watchlistRowsLoading, setWatchlistRowsLoading] = useState(false);
-  const [marketUniverse, setMarketUniverse] = useState<AiMarketUniverse>('none');
+  const [marketUniverse, setMarketUniverse] = useState<AiMarketUniverse>(() =>
+    isSp500OnlyMode() ? 'sp500' : 'none',
+  );
   const [selectedRowTicker, setSelectedRowTicker] = useState<string>('');
   const [selectedSector, setSelectedSector] = useState<string>('all');
   const [selectedCompanyTicker, setSelectedCompanyTicker] = useState<string>('all');
@@ -641,6 +687,14 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   const watchlistApiUrl = getDefaultWatchlistApiBase();
 
   const libraryEntries = useMemo(() => getWatchlistFileLibrary(), [libraryRev]);
+
+  const aiUniverseSelectKeys = useMemo((): Exclude<AiMarketUniverse, 'none'>[] => {
+    if (isSp500OnlyMode()) return ['watchlist', 'sp500'];
+    return (Object.keys(AI_UNIVERSE_LABELS) as AiMarketUniverse[]).filter((k) => k !== 'none') as Exclude<
+      AiMarketUniverse,
+      'none'
+    >[];
+  }, []);
 
   useEffect(() => {
     if (watchlistSnapshotSource === 'team') {
@@ -698,6 +752,18 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   }, [marketUniverse]);
 
   useEffect(() => {
+    if (!isSp500OnlyMode()) return;
+    if (
+      marketUniverse === 'none' ||
+      marketUniverse === 'nasdaq' ||
+      marketUniverse === 'forex' ||
+      marketUniverse === 'commodity'
+    ) {
+      setMarketUniverse('sp500');
+    }
+  }, [marketUniverse]);
+
+  useEffect(() => {
     const loadPortfolioItems = async () => {
       if (!userId) {
         setPortfolioItems([]);
@@ -710,7 +776,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
         setPortfolioItems([]);
       }
     };
-    loadPortfolioItems();
+    void loadPortfolioItems();
   }, [userId]);
 
   useEffect(() => {
@@ -877,6 +943,8 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               torchlight_execution_feasibility: y.torchlight_execution_feasibility != null ? Number(y.torchlight_execution_feasibility) : null,
               torchlight_risk_adjusted_alpha: y.torchlight_risk_adjusted_alpha != null ? Number(y.torchlight_risk_adjusted_alpha) : null,
               ctr_total_return: y.ctr_total_return != null ? Number(y.ctr_total_return) : null,
+              ctr_price_return: y.ctr_price_return != null ? Number(y.ctr_price_return) : null,
+              ctr_cash_return: y.ctr_cash_return != null ? Number(y.ctr_cash_return) : null,
               ctr_annualized: y.ctr_annualized != null ? Number(y.ctr_annualized) : null,
               torchlight_ctr_score: y.torchlight_ctr_score != null ? Number(y.torchlight_ctr_score) : null,
               risk_volatility_annual: y.risk_volatility_annual != null ? Number(y.risk_volatility_annual) : null,
@@ -979,6 +1047,8 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             torchlight_execution_feasibility: y.torchlight_execution_feasibility != null ? Number(y.torchlight_execution_feasibility) : null,
             torchlight_risk_adjusted_alpha: y.torchlight_risk_adjusted_alpha != null ? Number(y.torchlight_risk_adjusted_alpha) : null,
             ctr_total_return: y.ctr_total_return != null ? Number(y.ctr_total_return) : null,
+            ctr_price_return: y.ctr_price_return != null ? Number(y.ctr_price_return) : null,
+            ctr_cash_return: y.ctr_cash_return != null ? Number(y.ctr_cash_return) : null,
             ctr_annualized: y.ctr_annualized != null ? Number(y.ctr_annualized) : null,
             torchlight_ctr_score: y.torchlight_ctr_score != null ? Number(y.torchlight_ctr_score) : null,
             risk_volatility_annual: y.risk_volatility_annual != null ? Number(y.risk_volatility_annual) : null,
@@ -1092,6 +1162,21 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
     return bk - ak;
   });
   const selectedRow = rankedRows.find((r) => r.ticker === selectedRowTicker) || rankedRows[0] || null;
+
+  const insightReportBuild = useMemo(() => {
+    if (insightScope === 'Ticker') {
+      const t = symbol.trim().toUpperCase();
+      return { label: 'Ticker', subject: t, display: t || '—' };
+    }
+    if (insightScope === 'Sector') {
+      const name =
+        selectedSector !== 'all'
+          ? selectedSector.trim()
+          : symbol.trim() || 'Sector aggregate';
+      return { label: 'Sector', subject: name.toUpperCase(), display: name.toUpperCase() };
+    }
+    return { label: '', subject: '', display: '' };
+  }, [insightScope, symbol, selectedSector]);
 
   useEffect(() => {
     const loadReturns = async () => {
@@ -1308,6 +1393,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
     setForexHmmLoading(true);
     setError('');
     setInsight(null);
+    setSignalAnalysis(null);
     setForexHmmResults([]);
     try {
       const rows = await Promise.all(
@@ -1354,11 +1440,13 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
         setError(`No symbols in sector "${selectedSector}" for this universe.`);
         return;
       }
+      setSignalAnalysis(null);
+      setInsight(null);
       setLoading(true);
       setError('');
       try {
         const prompt = buildSectorInsightPrompt(selectedSector, sectorRows);
-        const data = await getStockInsight(selectedSector.toUpperCase(), prompt);
+        const data = await getStockInsight(selectedSector.toUpperCase(), prompt, { maxOutputTokens: 1550 });
         setInsight(data);
         setInsightScope('Sector');
       } catch (err) {
@@ -1372,21 +1460,33 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
 
     if (!rawInput && !preferredTickerRow) return;
 
-    setLoading(true);
     setError('');
+    setInsight(null);
+    if (preferredTickerRow) {
+      const t = preferredTickerRow.ticker.toUpperCase();
+      setSignalAnalysis(deriveWatchlistSignalAnalysis(preferredTickerRow));
+      setInsightScope('Ticker');
+      setSymbol(t);
+    } else {
+      setSignalAnalysis(null);
+    }
+
+    setLoading(true);
+
     try {
       if (preferredTickerRow) {
         const ticker = preferredTickerRow.ticker.toUpperCase();
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
         const todayNewsBundle = await fetchFinnhubCompanyNewsBundle(ticker, {
           daysBack: 0,
-          maxArticles: 2,
+          maxArticles: 1,
         });
         const todayNewsBlock = promptBlockFromBundle(todayNewsBundle);
         const contextualPrompt = buildContextualInsightPrompt(ticker, preferredTickerRow, todayNewsBlock);
-        const data = await getStockInsight(ticker, contextualPrompt);
+        const data = await getStockInsight(ticker, contextualPrompt, { maxOutputTokens: 3200 });
         setInsight(data);
-        setInsightScope('Ticker');
-        setSymbol(ticker);
       } else {
         const symbolUpper = rawInput.toUpperCase();
         const inputNorm = normalizeLookupValue(rawInput);
@@ -1397,7 +1497,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             throw new Error(`No rows found for sector "${sectorMatch}" in the current symbol set.`);
           }
           const prompt = buildSectorInsightPrompt(sectorMatch, sectorRows);
-          const data = await getStockInsight(sectorMatch.toUpperCase(), prompt);
+          const data = await getStockInsight(sectorMatch.toUpperCase(), prompt, { maxOutputTokens: 1550 });
           setInsight(data);
           setInsightScope('Sector');
         } else {
@@ -1421,12 +1521,14 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
       setError('Select a specific sector first, then click Generate Sector Insight.');
       return;
     }
+    setSignalAnalysis(null);
+    setInsight(null);
     setLoading(true);
     setError('');
     try {
       const sectorRows = activeRows.filter((r) => (r.sector || '').trim() === selectedSector);
       const prompt = buildSectorInsightPrompt(selectedSector, sectorRows);
-      const data = await getStockInsight(selectedSector.toUpperCase(), prompt);
+      const data = await getStockInsight(selectedSector.toUpperCase(), prompt, { maxOutputTokens: 1550 });
       setInsight(data);
       setInsightScope('Sector');
     } catch (err) {
@@ -1450,8 +1552,12 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               <h2 className="text-3xl font-bold">Smart AI Market Intelligence</h2>
               <p className="text-indigo-100 max-w-lg mx-auto">
                 {universeReady
-                  ? 'Pick a ticker from the loaded watchlist table, or run a sector-style query from the table filters below.'
-                  : 'Choose a symbol universe to continue.'}
+                  ? isSp500OnlyMode()
+                    ? 'S&P 500 scope: use team watchlist (index members only) or the full team list, then pick a ticker or sector.'
+                    : 'Pick a ticker from the loaded watchlist table, or run a sector-style query from the table filters below.'
+                  : isSp500OnlyMode()
+                    ? 'Loading watchlist data for S&P 500 analysis…'
+                    : 'Choose a symbol universe to continue.'}
               </p>
             </div>
           ) : null}
@@ -1461,17 +1567,19 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               Symbol universe
             </label>
             <select
-              value={marketUniverse === 'none' ? '' : marketUniverse}
+              value={isSp500OnlyMode() ? marketUniverse : marketUniverse === 'none' ? '' : marketUniverse}
               onChange={(e) => {
                 const v = e.target.value;
                 setMarketUniverse(v === '' ? 'none' : (v as Exclude<AiMarketUniverse, 'none'>));
               }}
               className="w-full px-3 py-2.5 rounded-xl border border-white/25 bg-white/15 text-white text-sm font-semibold focus:ring-2 focus:ring-emerald-400/50 outline-none"
             >
-              <option value="" className="text-slate-900">
-                Choose…
-              </option>
-              {(Object.keys(AI_UNIVERSE_LABELS) as (keyof typeof AI_UNIVERSE_LABELS)[]).map((key) => (
+              {!isSp500OnlyMode() ? (
+                <option value="" className="text-slate-900">
+                  Choose…
+                </option>
+              ) : null}
+              {aiUniverseSelectKeys.map((key) => (
                 <option key={key} value={key} className="text-slate-900">
                   {AI_UNIVERSE_LABELS[key]}
                 </option>
@@ -2004,7 +2112,9 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
           </div>
         ) : (
           <p className="text-slate-400 text-sm font-medium">
-            Sign in and add a daily watchlist snapshot to use Team watchlist or S&amp;P (watchlist). Or switch to NASDAQ, FOREX, or Commodity for a built-in list.
+            {isSp500OnlyMode()
+              ? 'Sign in and add a daily watchlist snapshot to use Team watchlist or S&P 500 (watchlist members only). Other universes are hidden — set VITE_SP500_ONLY=false in .env to restore them.'
+              : 'Sign in and add a daily watchlist snapshot to use Team watchlist or S&P (watchlist). Or switch to NASDAQ, FOREX, or Commodity for a built-in list.'}
           </p>
         )}
       </div>
@@ -2284,6 +2394,67 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
       </>
       ) : null}
 
+      {signalAnalysis && insightScope === 'Ticker' && marketUniverse !== 'forex' && (
+        <div className="max-w-4xl mx-auto space-y-3 animate-in fade-in duration-300">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <h3 className="text-xs font-black uppercase tracking-widest text-slate-500">
+              Watchlist signal analysis (instant)
+            </h3>
+            {loading ? (
+              <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">
+                AI narrative loading…
+              </span>
+            ) : null}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="rounded-2xl border-2 border-emerald-400 bg-emerald-50/95 p-5 shadow-sm ring-1 ring-emerald-200/60">
+              <h4 className="text-emerald-900 font-black text-[10px] uppercase tracking-widest mb-2">
+                IV &amp; value sentiment
+              </h4>
+              <p className="text-emerald-950 font-bold text-sm leading-snug mb-3">{signalAnalysis.iv.headline}</p>
+              <ul className="text-sm text-emerald-900 space-y-1.5 list-disc pl-5 leading-relaxed">
+                {signalAnalysis.iv.bullets.map((line, i) => (
+                  <li key={`iv-${i}`}>{line}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="rounded-2xl border-2 border-rose-400 bg-rose-50/95 p-5 shadow-sm ring-1 ring-rose-200/60">
+              <h4 className="text-rose-900 font-black text-[10px] uppercase tracking-widest mb-2">Risk signals</h4>
+              <p className="text-rose-950 font-bold text-sm leading-snug mb-3">{signalAnalysis.risk.headline}</p>
+              <ul className="text-sm text-rose-900 space-y-1.5 list-disc pl-5 leading-relaxed">
+                {signalAnalysis.risk.bullets.map((line, i) => (
+                  <li key={`risk-${i}`}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="rounded-2xl border-2 border-teal-400 bg-teal-50/95 p-5 shadow-sm ring-1 ring-teal-200/60">
+              <h4 className="text-teal-900 font-black text-[10px] uppercase tracking-widest mb-2">
+                Growth drivers &amp; Torchlight factors
+              </h4>
+              <p className="text-teal-950 font-bold text-sm leading-snug mb-3">{signalAnalysis.growthDrivers.headline}</p>
+              <ul className="text-sm text-teal-900 space-y-1.5 list-disc pl-5 leading-relaxed">
+                {signalAnalysis.growthDrivers.bullets.map((line, i) => (
+                  <li key={`gd-${i}`}>{line}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="rounded-2xl border-2 border-sky-500 bg-sky-50/95 p-5 shadow-sm ring-1 ring-sky-200/60">
+              <h4 className="text-sky-950 font-black text-[10px] uppercase tracking-widest mb-2">
+                Shareholder return (CTR) — full decomposition
+              </h4>
+              <p className="text-sky-950 font-bold text-sm leading-snug mb-3">{signalAnalysis.ctr.headline}</p>
+              <ul className="text-sm text-sky-950 space-y-1.5 list-disc pl-5 leading-relaxed">
+                {signalAnalysis.ctr.bullets.map((line, i) => (
+                  <li key={`ctr-${i}`}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div className="bg-rose-50 border border-rose-100 text-rose-600 p-4 rounded-xl text-center font-medium">
           ⚠️ {error}
@@ -2294,25 +2465,36 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
           {/* Main Recommendation */}
           <div className="md:col-span-2 space-y-6">
-            <div className="inline-flex items-center px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-[11px] font-bold uppercase tracking-widest text-slate-600">
-              Insight scope: {insightScope}
+            <div className="rounded-2xl border-2 border-slate-200 bg-gradient-to-br from-slate-50 to-white p-6 shadow-sm">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Build</p>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                {insightScope === 'Ticker' && insightReportBuild.display && insightReportBuild.display !== '—' ? (
+                  <span className="text-3xl font-black font-mono tracking-tight text-slate-900">{insightReportBuild.display}</span>
+                ) : (
+                  <span className="text-2xl font-black tracking-tight text-slate-900">
+                    <span className="text-slate-500 text-xs font-black uppercase tracking-widest mr-2">Sector</span>
+                    {insightReportBuild.display || '—'}
+                  </span>
+                )}
+                <span className="text-slate-300 text-xl font-light select-none">·</span>
+                <span className={`text-2xl font-black ${insightConditionTextClass(insight.sentiment)}`}>
+                  {insightConditionDisplayLabel(insight.sentiment)}
+                </span>
+              </div>
             </div>
-            {insightScope === 'Ticker' && symbol.trim() && (
-              <p className="text-lg font-black text-blue-700">
-                {symbol.trim().toUpperCase()}
-              </p>
-            )}
             <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-center mb-6">
                 <div>
                   <h3 className="text-slate-500 text-sm font-semibold uppercase tracking-wider">AI RECOMMENDATION</h3>
-                  <p className="text-3xl font-bold mt-1">{insight.sentiment}</p>
+                  <p className={`text-3xl font-bold mt-1 ${insightConditionTextClass(insight.sentiment)}`}>
+                    {insightConditionDisplayLabel(insight.sentiment)}
+                  </p>
                 </div>
                 <div className="text-right">
                   <p className="text-slate-500 text-sm font-semibold">CONFIDENCE</p>
                   <div className="flex items-center mt-1 space-x-2">
                     <div className="w-32 h-3 bg-slate-100 rounded-full overflow-hidden">
-                      <div 
+                      <div
                         className={`h-full rounded-full ${
                           insight.sentiment === 'Bearish'
                             ? 'bg-rose-500'
@@ -2323,18 +2505,27 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                         style={{ width: `${insight.confidence}%` }}
                       ></div>
                     </div>
-                    <span className={`text-lg font-bold ${
-                      insight.sentiment === 'Bearish'
-                        ? 'text-rose-600'
-                        : insight.sentiment === 'Neutral'
-                          ? 'text-amber-600'
-                          : 'text-emerald-600'
-                    }`}>{insight.confidence}%</span>
+                    <span
+                      className={`text-lg font-bold ${
+                        insight.sentiment === 'Bearish'
+                          ? 'text-rose-600'
+                          : insight.sentiment === 'Neutral'
+                            ? 'text-amber-600'
+                            : 'text-emerald-600'
+                      }`}
+                    >
+                      {insight.confidence}%
+                    </span>
                   </div>
                 </div>
               </div>
               <p className="text-slate-700 leading-relaxed text-lg">
-                {insight.recommendation}
+                At <span className="font-bold text-slate-900">{insight.confidence}%</span> model confidence, the stance
+                is{' '}
+                <span className={`font-bold ${insightConditionTextClass(insight.sentiment)}`}>
+                  {insightConditionDisplayLabel(insight.sentiment)}
+                </span>
+                . {insight.recommendation}
               </p>
             </div>
 
@@ -2344,6 +2535,61 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                 {insight.summary}
               </p>
             </div>
+
+            {insightScope === 'Ticker' && insight.extended_report && (
+              <div className="bg-gradient-to-br from-indigo-50/90 to-white p-8 rounded-2xl shadow-sm border-2 border-indigo-200/80 ring-1 ring-indigo-100">
+                <div className="flex flex-wrap items-baseline justify-between gap-3 mb-4">
+                  <h3 className="text-lg font-black text-indigo-950 tracking-tight">Extended report</h3>
+                  {insightReportBuild.display && insightReportBuild.display !== '—' ? (
+                    <span className="text-sm font-mono font-bold text-indigo-800 bg-white/80 px-3 py-1 rounded-lg border border-indigo-200">
+                      {insightReportBuild.display}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-[11px] font-bold uppercase tracking-widest text-indigo-600/90 mb-3">
+                  Ticker narrative · recommendation context
+                </p>
+                <div className="text-slate-800 leading-relaxed text-[15px] whitespace-pre-wrap">
+                  {insight.extended_report}
+                </div>
+              </div>
+            )}
+
+            {(insight.valuation_view ||
+              insight.torchlight_view ||
+              insight.risk_view ||
+              insight.market_catalysts) && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {insight.valuation_view ? (
+                  <div className="bg-emerald-50/90 p-5 rounded-xl border-2 border-emerald-200 shadow-sm">
+                    <h4 className="text-xs font-black uppercase tracking-widest text-emerald-800 mb-2">
+                      Value vs price (IV) — AI
+                    </h4>
+                    <p className="text-sm text-emerald-950 leading-relaxed whitespace-pre-wrap">{insight.valuation_view}</p>
+                  </div>
+                ) : null}
+                {insight.torchlight_view ? (
+                  <div className="bg-violet-50/90 p-5 rounded-xl border border-violet-200 shadow-sm">
+                    <h4 className="text-xs font-black uppercase tracking-widest text-violet-800 mb-2">Torchlight — AI</h4>
+                    <p className="text-sm text-violet-950 leading-relaxed whitespace-pre-wrap">{insight.torchlight_view}</p>
+                  </div>
+                ) : null}
+                {insight.risk_view ? (
+                  <div className="bg-rose-50/95 p-5 rounded-xl border-2 border-rose-200 shadow-sm">
+                    <h4 className="text-xs font-black uppercase tracking-widest text-rose-900 mb-2">Risk profile — AI</h4>
+                    <p className="text-sm text-rose-950 leading-relaxed whitespace-pre-wrap">{insight.risk_view}</p>
+                  </div>
+                ) : null}
+                {insight.market_catalysts ? (
+                  <div className="bg-slate-50 p-5 rounded-xl border border-slate-100 md:col-span-2">
+                    <h4 className="text-xs font-black uppercase tracking-widest text-emerald-700 mb-2">
+                      Market & catalysts
+                    </h4>
+                    <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{insight.market_catalysts}</p>
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
 
           {/* Pros and Cons */}

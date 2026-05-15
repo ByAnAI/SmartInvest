@@ -23,6 +23,9 @@ interface AuthProps {
 
 type AuthMode = 'login' | 'signup' | 'forgot-password' | 'reset-password' | 'verify-email';
 
+/** Lightweight RFC-5322-ish check; backend Supabase still validates authoritatively. */
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // Parse hash fragment for Supabase redirect params (e.g. password reset link)
 // Handles both #access_token=... and #/recovery?access_token=... styles
 function getHashParam(name: string): string | null {
@@ -33,7 +36,7 @@ function getHashParam(name: string): string | null {
   return match ? decodeURIComponent(match[1].replace(/\+/g, ' ').trim()) : null;
 }
 
-/** Supabase auth can hang on navigator.locks or slow networks — never leave the UI stuck on “Processing…”. */
+/** Supabase auth can hang on navigator.locks or slow networks — never leave the UI stuck on "Processing…". */
 const AUTH_NETWORK_TIMEOUT_MS = 28_000;
 
 function withAuthTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -57,25 +60,35 @@ function withAuthTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   });
 }
 
-const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, initialMode = 'login', actionCode }) => {
+function EyeIcon({ open }: { open: boolean }) {
+  return open ? (
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  ) : (
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+      <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+      <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+      <line x1="2" y1="2" x2="22" y2="22" />
+    </svg>
+  );
+}
+
+const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, initialMode = 'login' }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
 
-  // Initialize email from local storage if exists (never use remembered password for reset flow)
-  const [email, setEmail] = useState(() => {
-    return localStorage.getItem('rememberedEmail') || '';
-  });
-
-  const [password, setPassword] = useState(() => {
-    return localStorage.getItem('rememberedPassword') || '';
-  });
+  const [email, setEmail] = useState(() => localStorage.getItem('rememberedEmail') || '');
+  const [password, setPassword] = useState(() => localStorage.getItem('rememberedPassword') || '');
 
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  const [rememberMe, setRememberMe] = useState(() => {
-    return !!localStorage.getItem('rememberedEmail');
-  });
+  const [rememberMe, setRememberMe] = useState(() => !!localStorage.getItem('rememberedEmail'));
 
   const emailNormForUi = (email || '').trim().toLowerCase();
   /** Master admin + env: browser can submit with empty password (Supabase still receives VITE_AUTH_UNIVERSAL_PASSWORD). */
@@ -91,9 +104,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
   const [recoverySessionReady, setRecoverySessionReady] = useState(false);
 
   useEffect(() => {
-    if (initialError) {
-      setError(initialError);
-    }
+    if (initialError) setError(initialError);
   }, [initialError]);
 
   // When user lands from reset-password email link: establish session from URL hash so updateUser() works
@@ -124,7 +135,6 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
           }
           setRecoverySessionReady(true);
           setError('');
-          // Remove only the hash (tokens); keep ?mode=reset-password so user stays on reset form
           const url = new URL(window.location.href);
           url.hash = '';
           window.history.replaceState(null, '', url.pathname + url.search);
@@ -135,7 +145,6 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
         return;
       }
 
-      // Client may have already parsed the hash; check session
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
         setRecoverySessionReady(true);
@@ -164,10 +173,19 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
         return;
       }
 
-      // Supabase treats email as case-sensitive; normalize so login matches signup
       const emailNormalized = (email || '').trim().toLowerCase();
       const passwordTrimmed = (password || '').trim();
       const passwordForSupabase = getAuthPassword(passwordTrimmed, emailNormalized);
+
+      if (
+        (mode === 'login' || mode === 'signup' || mode === 'forgot-password') &&
+        emailNormalized &&
+        !EMAIL_REGEX.test(emailNormalized)
+      ) {
+        setError('Enter a valid email address (e.g. you@example.com).');
+        setLoading(false);
+        return;
+      }
 
       if (mode === 'login' && emailNormalized === MASTER_ADMIN_EMAIL) {
         if (envTruthy(import.meta.env.VITE_ADMIN_ANY_PASSWORD) && !String(import.meta.env.VITE_AUTH_UNIVERSAL_PASSWORD ?? '').trim()) {
@@ -219,7 +237,6 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
         );
 
         if (error) throw error;
-        // If email confirmations are disabled in Supabase, session is usually returned here.
         if (data?.session?.user) {
           flushSync(() => {
             onSessionReady?.(data.session);
@@ -228,7 +245,6 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
           onClose();
           return;
         }
-        // When confirmations are off, some setups still omit the session on signUp — sign in once with the same password.
         const { data: signInData, error: signInError } = await withAuthTimeout(
           supabase.auth.signInWithPassword({
             email: emailNormalized,
@@ -244,12 +260,10 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
           onClose();
           return;
         }
-        // Hosted projects with "Confirm email" enabled: user must verify before sign-in works.
         setVerificationSent(true);
         setLoading(false);
 
       } else if (mode === 'forgot-password') {
-        // When app is open on localhost, always send localhost so reset link never goes to Netlify
         const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
         const baseUrl = isLocalhost
           ? window.location.origin
@@ -265,7 +279,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
         if (error) throw error;
         setSuccessMsg(
           isLocalhost
-            ? "Recovery link sent. Check your inbox. The link will open this app on localhost. If it opens Netlify instead, add http://localhost:3000 (and your port if different) to Supabase → Authentication → URL Configuration → Redirect URLs, then request a new link."
+            ? "Recovery link sent. Check your inbox. The link will open this app on localhost. If it opens a different host instead, add http://localhost:3000 (and your port if different) to Supabase → Authentication → URL Configuration → Redirect URLs, then request a new link."
             : "Recovery link sent. Check your inbox (and spam)."
         );
         setTimeout(() => setMode('login'), 6000);
@@ -273,11 +287,11 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
       } else if (mode === 'reset-password') {
         const pwd = (newPassword || '').trim();
         const conf = (confirmPassword || '').trim();
-        if (pwd !== conf) throw new Error("Passwords do not match.");
-        if (pwd.length < 6) throw new Error("Password must be at least 6 characters.");
+        if (pwd !== conf) throw new Error('Passwords do not match.');
+        if (pwd.length < 6) throw new Error('Password must be at least 6 characters.');
 
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session) throw new Error("Recovery session expired or invalid. Please use Forgot Password again to get a new link.");
+        if (!session) throw new Error('Recovery session expired or invalid. Please use Forgot Password again to get a new link.');
 
         const userEmail = (session.user?.email ?? '').trim().toLowerCase();
         const { error } = await supabase.auth.updateUser({
@@ -292,7 +306,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
         setNewPassword('');
         setConfirmPassword('');
         setPassword('');
-        setSuccessMsg("Password updated. Log in with your new password.");
+        setSuccessMsg('Password updated. Sign in with your new password.');
         setMode('login');
         const url = new URL(window.location.href);
         url.searchParams.delete('mode');
@@ -329,7 +343,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
           );
         } else {
           setError(
-            'Invalid login credentials. Use the exact email you signed up with (try lowercase) and your current password. If you just reset your password, use the new one.'
+            'Invalid email or password. Double-check your email (try lowercase) and current password. If you just reset your password, use the new one.'
           );
         }
       } else if (msg.includes('failed to fetch') || msg.includes('network') || msg.includes('dns') || msg.includes('nxdomain')) {
@@ -337,10 +351,10 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
           'Authentication server is unreachable. Put VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in a file named `.env` in this project folder (same level as package.json), save, restart npm run dev.'
         );
       } else if (msg.includes('rate limit exceeded')) {
-        setError('Email rate limit exceeded. Wait an hour or add custom SMTP in Supabase (Project Settings → Auth → SMTP).');
+        setError('Too many attempts. Wait a few minutes, or add a custom SMTP provider in Supabase (Project Settings → Auth → SMTP).');
       } else if (msg.includes('recovery email') || msg.includes('error sending')) {
         setError(
-          'Recovery email could not be sent. In Supabase Dashboard: 1) Project Settings → Auth → SMTP — enable custom SMTP (SendGrid, Resend, etc.). 2) Authentication → URL Configuration — add this redirect URL: ' +
+          'Recovery email could not be sent. In Supabase Dashboard: 1) Project Settings → Auth → SMTP — enable a custom SMTP provider (SendGrid, Resend, etc.). 2) Authentication → URL Configuration — add this redirect URL: ' +
             `${window.location.origin}/?mode=reset-password`
         );
       } else if (msg.includes('email logins are disabled')) {
@@ -375,6 +389,11 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
         setLoading(false);
         return;
       }
+      if (!EMAIL_REGEX.test(emailNormalized)) {
+        setError('Enter a valid email address (e.g. you@example.com).');
+        setLoading(false);
+        return;
+      }
       const redirectTo = `${window.location.origin}${window.location.pathname}`;
       const { error } = await withAuthTimeout(
         supabase.auth.signInWithOtp({
@@ -387,7 +406,7 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
       );
       if (error) throw error;
       setSuccessMsg(
-        'Login link sent. Check inbox and spam — click the link to finish signing in. If nothing arrives, enable SMTP in Supabase (Auth settings) and add this site to Authentication → URL Configuration → Redirect URLs: ' +
+        'Login link sent. Check your inbox and spam — click the link to finish signing in. If nothing arrives, enable SMTP in Supabase (Auth settings) and add this site to Authentication → URL Configuration → Redirect URLs: ' +
           redirectTo
       );
     } catch (err: any) {
@@ -409,183 +428,220 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
         email,
         options: {
           emailRedirectTo: window.location.origin,
-        }
+        },
       });
 
       if (error) throw error;
-      setSuccessMsg("Verification email resent. Please check your inbox.");
+      setSuccessMsg('Verification email resent. Please check your inbox.');
     } catch (err: any) {
-      console.error("Resend Error:", err.message);
-      if (err.message?.toLowerCase().includes("rate limit exceeded")) {
-        setError("Rate limit exceeded. Please wait before trying again or use a custom SMTP.");
+      console.error('Resend Error:', err.message);
+      if (err.message?.toLowerCase().includes('rate limit exceeded')) {
+        setError('Too many attempts. Please wait before trying again or configure custom SMTP.');
       } else {
-        setError(err.message || "Failed to resend verification email.");
+        setError(err.message || 'Failed to resend verification email.');
       }
     } finally {
       setLoading(false);
     }
   };
 
+  /* ---------------- Shared UI tokens ---------------- */
+
+  const cardClass =
+    'bg-white w-full max-w-md rounded-2xl shadow-xl ring-1 ring-slate-200 relative';
+  const overlayClass =
+    'fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 backdrop-blur-sm';
+  const inputClass =
+    'w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 disabled:bg-slate-50 disabled:text-slate-500';
+  const labelClass = 'block text-sm font-medium text-slate-700 mb-1.5';
+  const primaryBtnClass =
+    'w-full inline-flex items-center justify-center gap-2 bg-emerald-600 text-white py-2.5 rounded-lg font-semibold text-sm hover:bg-emerald-700 active:bg-emerald-800 transition shadow-sm disabled:bg-emerald-300 disabled:cursor-not-allowed';
+  const secondaryBtnClass =
+    'w-full inline-flex items-center justify-center gap-2 bg-white border border-slate-300 text-slate-700 py-2.5 rounded-lg font-medium text-sm hover:bg-slate-50 active:bg-slate-100 transition disabled:opacity-50 disabled:cursor-not-allowed';
+  const linkClass =
+    'text-sm font-medium text-emerald-600 hover:text-emerald-700 hover:underline';
+
+  /* ---------------- Verification-sent screen ---------------- */
+
   if (verificationSent) {
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
-        <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden relative border border-slate-100 p-10 text-center">
-          <button onClick={onClose} className="absolute top-6 right-6 text-slate-400 hover:text-slate-900 p-2 transition-colors">✕</button>
+      <div className={overlayClass} role="dialog" aria-modal="true" aria-labelledby="auth-verify-title">
+        <div className={cardClass}>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="absolute top-4 right-4 w-8 h-8 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+          >
+            ✕
+          </button>
 
-          <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6 text-2xl shadow-sm">
-            ✉️
-          </div>
+          <div className="p-8 sm:p-10 text-center">
+            <div className="mx-auto w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mb-5">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="5" width="18" height="14" rx="2" />
+                <path d="m3 7 9 6 9-6" />
+              </svg>
+            </div>
 
-          <h2 className="text-2xl font-black text-slate-900 tracking-tight mb-4">Verify Your Email</h2>
+            <h2 id="auth-verify-title" className="text-xl font-semibold text-slate-900 mb-2">
+              Check your email
+            </h2>
+            <p className="text-sm text-slate-500 leading-relaxed mb-6">
+              We sent a verification link to <span className="font-medium text-slate-900">{email}</span>.
+              Click it to activate your account, then return here to sign in.
+            </p>
 
-          <p className="text-slate-500 font-medium leading-relaxed mb-8">
-            A verification link has been sent to <br />
-            <span className="font-bold text-slate-900">{email}</span>.
-            <br /><br />
-            Check your inbox (and spam). Once you click the link in the email, you can return here and log in.
-          </p>
+            {error && (
+              <div className="mb-4 px-3 py-2.5 text-sm rounded-lg border bg-rose-50 border-rose-200 text-rose-700 text-left">
+                {error}
+              </div>
+            )}
+            {successMsg && (
+              <div className="mb-4 px-3 py-2.5 text-sm rounded-lg border bg-emerald-50 border-emerald-200 text-emerald-700 text-left">
+                {successMsg}
+              </div>
+            )}
 
-          <div className="space-y-4">
-            <button
-              onClick={() => { setVerificationSent(false); setMode('login'); }}
-              className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-xl transition-all active:scale-95"
-            >
-              I've Verified, Continue to Log In
-            </button>
-
-            <button
-              onClick={handleResendEmail}
-              disabled={loading}
-              className="w-full bg-slate-100 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-200 transition-all active:scale-95 disabled:opacity-50"
-            >
-              {loading ? 'Resending...' : 'Resend Verification Email'}
-            </button>
-
-            {error && <p className="text-rose-500 text-[10px] font-bold mt-2 uppercase">⚠️ {error}</p>}
-            {successMsg && <p className="text-emerald-500 text-[10px] font-bold mt-2 uppercase">✓ {successMsg}</p>}
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => { setVerificationSent(false); setMode('login'); setError(''); setSuccessMsg(''); }}
+                className={primaryBtnClass}
+              >
+                I’ve verified — continue to sign in
+              </button>
+              <button
+                type="button"
+                onClick={handleResendEmail}
+                disabled={loading}
+                className={secondaryBtnClass}
+              >
+                {loading ? 'Resending…' : 'Resend verification email'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
-      <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden relative border border-slate-100">
-        <button onClick={onClose} className="absolute top-6 right-6 text-slate-400 hover:text-slate-900 p-2 transition-colors">✕</button>
+  /* ---------------- Per-mode copy ---------------- */
 
-        <div className="p-10">
-          <div className="text-center mb-10">
-            <h2 className="text-4xl font-black text-slate-900 tracking-tight">
-              {mode === 'login' ? 'Authorize' :
-                mode === 'signup' ? 'Join Vault' :
-                  mode === 'forgot-password' ? 'Recovery' :
-                    mode === 'reset-password' ? 'New Password' : 'Verify Email'}
+  const titleByMode: Record<AuthMode, string> = {
+    login: 'Sign in',
+    signup: 'Create your account',
+    'forgot-password': 'Forgot your password?',
+    'reset-password': 'Set a new password',
+    'verify-email': 'Verify your email',
+  };
+  const subtitleByMode: Record<AuthMode, string> = {
+    login: 'Welcome back. Sign in to continue.',
+    signup: 'Start tracking and analyzing your portfolio.',
+    'forgot-password': 'Enter your email and we’ll send you a reset link.',
+    'reset-password': 'Choose a new password (at least 6 characters).',
+    'verify-email': 'Click below to finish verifying your email.',
+  };
+  const submitLabel: Record<AuthMode, string> = {
+    login: loading ? 'Signing in…' : 'Sign in',
+    signup: loading ? 'Creating account…' : 'Create account',
+    'forgot-password': loading ? 'Sending…' : 'Send reset link',
+    'reset-password': loading ? 'Updating…' : recoverySessionReady ? 'Update password' : 'Preparing…',
+    'verify-email': loading ? 'Verifying…' : 'Verify account',
+  };
+
+  return (
+    <div className={overlayClass} role="dialog" aria-modal="true" aria-labelledby="auth-title">
+      <div className={cardClass}>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute top-4 right-4 w-8 h-8 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+        >
+          ✕
+        </button>
+
+        <div className="p-8 sm:p-10">
+          <div className="mb-7">
+            <h2 id="auth-title" className="text-2xl font-semibold text-slate-900 tracking-tight">
+              {titleByMode[mode]}
             </h2>
-            <p className="text-slate-400 mt-2 font-black uppercase tracking-[0.2em] text-[10px]">Institutional Wealth OS</p>
+            <p className="text-sm text-slate-500 mt-1">{subtitleByMode[mode]}</p>
           </div>
 
           {error && (
-            <div className="mb-6 p-4 text-xs rounded-2xl border bg-rose-50 border-rose-100 text-rose-600 font-bold text-center">
-              ⚠️ {error}
+            <div role="alert" className="mb-4 px-3 py-2.5 text-sm rounded-lg border bg-rose-50 border-rose-200 text-rose-700">
+              {error}
             </div>
           )}
-          {successMsg && <div className="mb-6 p-4 text-xs rounded-2xl border bg-emerald-50 border-emerald-100 text-emerald-600 font-bold text-center">✓ {successMsg}</div>}
+          {successMsg && (
+            <div role="status" className="mb-4 px-3 py-2.5 text-sm rounded-lg border bg-emerald-50 border-emerald-200 text-emerald-700">
+              {successMsg}
+            </div>
+          )}
 
           {isPasswordAuthBlockedByKey() && (mode === 'login' || mode === 'signup') && (
-            <div className="mb-6 p-4 text-xs rounded-2xl border bg-amber-50 border-amber-200 text-amber-950 leading-relaxed">
-              <p className="font-black uppercase tracking-widest text-[10px] mb-2">Fix sign-in (required)</p>
+            <div className="mb-4 px-3 py-2.5 text-sm rounded-lg border bg-amber-50 border-amber-200 text-amber-900 leading-relaxed">
+              <p className="font-semibold mb-1">Sign-in needs the legacy anon JWT</p>
               <p>
-                The anon key in <span className="font-mono text-[10px]">.env</span> is publishable-only (
-                <span className="font-mono text-[10px]">sb_publishable_…</span>). Password login needs the legacy JWT anon key from{' '}
-                <strong>Supabase → Project Settings → API</strong> (starts with <span className="font-mono text-[10px]">eyJ</span>). Add{' '}
-                <span className="font-mono text-[10px] break-all">VITE_SUPABASE_ANON_JWT=eyJ…</span> next to your existing lines, or replace{' '}
-                <span className="font-mono text-[10px]">VITE_SUPABASE_ANON_KEY</span> with that JWT. Save and restart{' '}
-                <span className="font-mono text-[10px]">npm run dev</span>.
+                The anon key in <code className="font-mono text-[12px]">.env</code> is publishable-only
+                (<code className="font-mono text-[12px]">sb_publishable_…</code>). Password login needs the legacy JWT
+                anon key from <strong>Supabase → Project Settings → API</strong> (starts with{' '}
+                <code className="font-mono text-[12px]">eyJ</code>). Add{' '}
+                <code className="font-mono text-[12px] break-all">VITE_SUPABASE_ANON_JWT=eyJ…</code> next to your existing
+                lines, or replace <code className="font-mono text-[12px]">VITE_SUPABASE_ANON_KEY</code> with that JWT.
+                Save and restart <code className="font-mono text-[12px]">npm run dev</code>.
               </p>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {(mode !== 'reset-password' && mode !== 'verify-email') && (
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Email Identifier</label>
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            {(mode === 'login' || mode === 'signup' || mode === 'forgot-password') && (
+              <div>
+                <label htmlFor="auth-email" className={labelClass}>Email</label>
                 <input
+                  id="auth-email"
                   type="email"
                   required
                   name="email"
                   autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
-                  placeholder="investor@vault.com"
+                  className={inputClass}
+                  placeholder="you@example.com"
                   disabled={mode === 'forgot-password' && successMsg !== ''}
                 />
               </div>
             )}
 
-            {mode === 'reset-password' && (
-              <div className="space-y-5">
-                {!recoverySessionReady && (
-                  <p className="text-amber-600 text-xs font-bold">Preparing reset… Please wait a moment.</p>
-                )}
-                <p className="text-slate-500 text-xs">Choose a new password and confirm it. After you confirm, you will be taken to the login screen to sign in with your new password.</p>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">New password</label>
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    autoComplete="new-password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
-                    placeholder="At least 6 characters"
-                    disabled={!recoverySessionReady}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Confirm new password</label>
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
-                    placeholder="Re-enter your new password"
-                    disabled={!recoverySessionReady}
-                  />
-                </div>
-              </div>
-            )}
-
-            {mode === 'verify-email' && (
-              <div className="py-4 text-center">
-                <p className="text-slate-500 font-medium mb-2">Click below to finalize your email verification.</p>
-              </div>
-            )}
-
-            {mode !== 'forgot-password' && mode !== 'reset-password' && (
-              <div className="space-y-1.5">
-                <div className="flex justify-between items-center ml-1">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Access Password</label>
+            {(mode === 'login' || mode === 'signup') && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label htmlFor="auth-password" className="block text-sm font-medium text-slate-700">
+                    Password
+                  </label>
                   {mode === 'login' && (
-                    <button type="button" onClick={() => setMode('forgot-password')} className="text-[10px] font-black text-emerald-600 hover:underline">Forgot Password?</button>
+                    <button
+                      type="button"
+                      onClick={() => { setMode('forgot-password'); setError(''); setSuccessMsg(''); }}
+                      className={linkClass}
+                    >
+                      Forgot password?
+                    </button>
                   )}
                 </div>
                 {adminLoginNoPasswordRequired && (
-                  <p className="text-[10px] text-slate-500 font-medium ml-1">
-                    Leave blank if you like — unlock uses <code className="text-slate-700">VITE_AUTH_UNIVERSAL_PASSWORD</code> for this admin account.
+                  <p className="text-xs text-slate-500 mb-1.5">
+                    Optional for the master admin — unlock uses{' '}
+                    <code className="font-mono text-[11px]">VITE_AUTH_UNIVERSAL_PASSWORD</code>.
                   </p>
                 )}
                 <div className="relative">
                   <input
-                    type={showPassword ? "text" : "password"}
-                    required={
-                      mode === 'signup' ? true : mode === 'login' ? !adminLoginNoPasswordRequired : true
-                    }
+                    id="auth-password"
+                    type={showPassword ? 'text' : 'password'}
+                    required={mode === 'signup' ? true : mode === 'login' ? !adminLoginNoPasswordRequired : true}
                     minLength={
                       mode === 'signup'
                         ? 6
@@ -596,49 +652,110 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
                           : undefined
                     }
                     name="password"
-                    autoComplete={mode === 'login' ? "current-password" : "new-password"}
+                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-bold text-slate-700"
+                    className={`${inputClass} pr-10`}
                     placeholder={adminLoginNoPasswordRequired ? '(optional for master admin)' : '••••••••'}
                   />
                   <button
                     type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-emerald-600 text-xs font-bold"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-700"
                   >
-                    {showPassword ? "HIDE" : "SHOW"}
+                    <EyeIcon open={showPassword} />
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Remember Me Checkbox */}
+            {mode === 'reset-password' && (
+              <>
+                {!recoverySessionReady && !error && (
+                  <p className="text-sm text-slate-500">Preparing reset session…</p>
+                )}
+                <div>
+                  <label htmlFor="auth-new-password" className={labelClass}>New password</label>
+                  <div className="relative">
+                    <input
+                      id="auth-new-password"
+                      type={showNewPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      autoComplete="new-password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      className={`${inputClass} pr-10`}
+                      placeholder="At least 6 characters"
+                      disabled={!recoverySessionReady}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword((v) => !v)}
+                      aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                      className="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-700"
+                    >
+                      <EyeIcon open={showNewPassword} />
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="auth-confirm-password" className={labelClass}>Confirm new password</label>
+                  <div className="relative">
+                    <input
+                      id="auth-confirm-password"
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      autoComplete="new-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className={`${inputClass} pr-10`}
+                      placeholder="Re-enter new password"
+                      disabled={!recoverySessionReady}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((v) => !v)}
+                      aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      className="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-700"
+                    >
+                      <EyeIcon open={showConfirmPassword} />
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {mode === 'verify-email' && (
+              <p className="text-sm text-slate-500">
+                Click verify to finalize your email verification.
+              </p>
+            )}
+
             {mode === 'login' && (
-              <div className="flex items-center ml-1 py-1">
+              <label className="flex items-center gap-2 select-none">
                 <input
-                  id="remember-me"
                   type="checkbox"
                   checked={rememberMe}
                   onChange={(e) => setRememberMe(e.target.checked)}
-                  className="w-4 h-4 text-emerald-600 bg-slate-50 border-slate-300 rounded focus:ring-emerald-500 focus:ring-2 accent-emerald-600 cursor-pointer"
+                  className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 focus:ring-2 accent-emerald-600 cursor-pointer"
                 />
-                <label htmlFor="remember-me" className="ml-2 text-[10px] font-black text-slate-400 uppercase tracking-widest cursor-pointer select-none">
-                  Remember Me
-                </label>
-              </div>
+                <span className="text-sm text-slate-600">Remember me on this device</span>
+              </label>
             )}
 
             <button
               type="submit"
-              disabled={loading || (mode === 'forgot-password' && successMsg !== '') || (mode === 'reset-password' && !recoverySessionReady)}
-              className="w-full bg-emerald-600 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-emerald-700 shadow-2xl transition-all active:scale-95 disabled:opacity-50 mt-4"
+              disabled={
+                loading ||
+                (mode === 'forgot-password' && successMsg !== '') ||
+                (mode === 'reset-password' && !recoverySessionReady)
+              }
+              className={primaryBtnClass}
             >
-              {loading ? 'Processing...' :
-                mode === 'login' ? 'Authorize Dashboard' :
-                  mode === 'signup' ? 'Create Vault' :
-                    mode === 'forgot-password' ? 'Send Recovery Link' :
-                      mode === 'reset-password' ? (recoverySessionReady ? 'Confirm and go to login' : 'Preparing…') : 'Verify Account'}
+              {submitLabel[mode]}
             </button>
 
             {mode === 'login' && (
@@ -646,26 +763,38 @@ const Auth: React.FC<AuthProps> = ({ onClose, onSessionReady, initialError, init
                 type="button"
                 disabled={loading || !(email || '').trim()}
                 onClick={handleMagicLinkLogin}
-                className="w-full mt-3 bg-slate-100 text-slate-800 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-slate-200 transition-all disabled:opacity-50"
+                className={secondaryBtnClass}
               >
-                Email me a login link (no password)
+                Email me a sign-in link instead
+              </button>
+            )}
+
+            {mode === 'forgot-password' && (
+              <button
+                type="button"
+                onClick={() => { setMode('login'); setError(''); setSuccessMsg(''); }}
+                className={secondaryBtnClass}
+              >
+                Back to sign in
               </button>
             )}
           </form>
 
           {(mode === 'login' || mode === 'signup') && (
-            <div className="mt-8 text-center">
+            <p className="mt-6 text-center text-sm text-slate-500">
+              {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
               <button
+                type="button"
                 onClick={() => {
                   setMode(mode === 'login' ? 'signup' : 'login');
                   setError('');
                   setSuccessMsg('');
                 }}
-                className="text-[10px] font-black text-emerald-600 hover:underline uppercase tracking-widest"
+                className="font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
               >
-                {mode === 'login' ? 'Establish New Profile' : 'Return to Authorization'}
+                {mode === 'login' ? 'Create account' : 'Sign in'}
               </button>
-            </div>
+            </p>
           )}
         </div>
       </div>
