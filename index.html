@@ -34,23 +34,31 @@
             background: #94a3b8;
         }
     </style>
-<script type="importmap">
-{
-  "imports": {
-    "react/": "https://esm.sh/react@^19.2.4/",
-    "react": "https://esm.sh/react@^19.2.4",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.41.0",
-    "firebase/": "https://esm.sh/firebase@^12.9.0/",
-    "recharts": "https://esm.sh/recharts@^3.7.0",
-    "xlsx": "https://esm.sh/xlsx@0.18.5"
-  }
-}
-</script>
 </head>
 <body class="text-slate-900">
-    <div id="root"></div>
+    <noscript>
+      <div style="padding: 2rem; font-family: system-ui; background: #fef9c3; color: #713f12;">
+        Enable JavaScript to run SmartInvest. This app requires a modern browser with scripts enabled.
+      </div>
+    </noscript>
+    <div id="root">
+      <div id="si-boot-placeholder" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;background:#0f172a;color:#cbd5f5;font-family:system-ui,sans-serif;font-size:14px;padding:2rem;text-align:center;max-width:32rem;margin:0 auto;">
+        <div>Loading SmartInvest…</div>
+        <p id="si-boot-hint" style="font-size:12px;color:#94a3b8;max-width:28rem;line-height:1.5;margin:0;"></p>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var hint = document.getElementById('si-boot-hint');
+        if (!hint) return;
+        setTimeout(function () {
+          if (!document.getElementById('si-boot-placeholder')) return;
+          hint.textContent =
+            'If this does not go away, the app bundle did not start. Open DevTools (F12) → Console and Network, confirm the URL matches the "Local" line from the terminal (e.g. http://localhost:3000), then hard-refresh (⌘⇧R).';
+        }, 8000);
+      })();
+    </script>
     <!-- Explicit module entry point to resolve blank page issues -->
-    <script type="module" src="/index.tsx"></script>
+    <script type="module" src="/index.tsx" onerror="var h=document.getElementById('si-boot-hint');if(h)h.textContent='Could not load /index.tsx (Network tab). Run npm run dev from the repo root and open the exact Local URL printed there (port may be 3001 if 3000 is busy).';"></script>
 </body>
 </html>

@@ -1,23 +1,29 @@
-
 import React from 'react';
-import { supabase } from '../services/supabase';
+import { signOutSafely } from '../services/supabase';
+import { useMarketSimulationSummary } from '../hooks/useMarketSimulationSummary';
 
 interface LayoutProps {
   children: React.ReactNode;
   activeTab: string;
   setActiveTab: (tab: string) => void;
   isAdmin?: boolean;
+  /** All signed-in users except admins use paper-only trading simulation. */
+  isPaperTrader?: boolean;
   user?: { email?: string | null; user_metadata?: { full_name?: string }; id?: string } | null;
   userMetadata?: { displayName?: string } | null;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAdmin, user, userMetadata }) => {
-  
+const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAdmin, isPaperTrader, user, userMetadata }) => {
+  const { summary } = useMarketSimulationSummary(user?.id ?? null);
+
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'analysis', label: 'AI Analysis', icon: '🧠' },
     { id: 'portfolio', label: 'Portfolio', icon: '💼' },
-    { id: 'news', label: 'Market News', icon: '🗞️' },
+    { id: 'trading-platform', label: 'Trading Platform', icon: '💹' },
+    { id: 'market-simulation', label: 'Market Simulation', icon: '📈' },
+    { id: 'news-board', label: 'News Board', icon: '📌' },
+    { id: 'sentiment-analysis', label: 'Sentiment', icon: '📰' },
     // New Sections
     { id: 'files', label: 'My Files', icon: '📁' },
     { id: 'notes', label: 'My Notes', icon: '📝' },
@@ -31,7 +37,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      await signOutSafely();
       // App.tsx onAuthStateChange will handle redirection
     } catch (error) {
       console.error("Logout Error:", error);
@@ -67,6 +73,24 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
         </nav>
 
         <div className="p-4 border-t border-slate-800 space-y-3">
+          {summary ? (
+            <div className="rounded-xl border border-slate-700/80 bg-slate-800/80 px-3 py-2.5 mb-2">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-1">Sim. account</p>
+              <p className="text-[11px] font-semibold text-slate-200 tabular-nums">
+                Cash{' '}
+                <span className="text-white">
+                  ${summary.cashUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </p>
+              <p className="text-[11px] font-semibold text-indigo-300 tabular-nums mt-0.5">
+                Equity{' '}
+                <span>
+                  ${summary.equityUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </p>
+            </div>
+          ) : null}
+
           <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
             <div className="flex items-center space-x-3">
               <div className={`w-8 h-8 rounded-full ${isAdmin ? 'bg-indigo-500' : 'bg-indigo-500/20'} flex items-center justify-center text-white border border-indigo-500/20 font-bold overflow-hidden shadow-sm`}>
@@ -77,10 +101,15 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
                 )}
               </div>
               <div className="overflow-hidden">
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                   <p className="text-xs font-bold text-white truncate">{userMetadata?.displayName || user?.user_metadata?.full_name || 'Investor'}</p>
                   {isAdmin && (
-                    <span className="text-[7px] font-black bg-indigo-500 text-white px-1 py-0.5 rounded tracking-tighter uppercase">Admin</span>
+                    <span className="text-[7px] font-black bg-indigo-500 text-white px-1 py-0.5 rounded tracking-tighter uppercase shrink-0">Admin</span>
+                  )}
+                  {isPaperTrader && (
+                    <span className="text-[7px] font-black bg-emerald-600/90 text-white px-1 py-0.5 rounded tracking-tighter uppercase shrink-0">
+                      Paper trader
+                    </span>
                   )}
                 </div>
                 <p className="text-[10px] text-slate-500 truncate">{user?.email}</p>
@@ -106,7 +135,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
             <div className="md:hidden">
                <h1 className="text-lg font-bold bg-gradient-to-r from-indigo-600 to-emerald-600 bg-clip-text text-transparent">S.A.I</h1>
             </div>
-            <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest hidden sm:block">{activeTab.replace('-', ' ')}</h2>
+            <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest hidden sm:block">
+              {tabs.find((t) => t.id === activeTab)?.label ??
+                (activeTab === 'admin' ? 'Admin Panel' : activeTab.replace(/-/g, ' '))}
+            </h2>
           </div>
           
           <div className="flex items-center space-x-2 md:space-x-4">
@@ -116,6 +148,23 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, isAd
               </div>
             )}
             
+            {summary ? (
+              <div
+                className="hidden xl:flex flex-col items-end text-right text-[10px] font-bold text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 tabular-nums leading-tight"
+                title="Paper-trading simulation (stored in this browser)"
+              >
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Sim. account</span>
+                <span>
+                  Cash <span className="text-slate-900">${summary.cashUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  <span className="text-slate-300 mx-1">·</span>
+                  Equity{' '}
+                  <span className="text-indigo-700">
+                    ${summary.equityUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </span>
+              </div>
+            ) : null}
+
             <div className="hidden lg:flex items-center space-x-2 text-[10px] text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 font-bold uppercase tracking-tighter">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               <span>Secure Cloud Sync</span>

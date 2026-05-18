@@ -1,12 +1,31 @@
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { getPortfolio, addStock, removeStock, updateStock, clearPortfolio, getDailyWatchlist, getDailyWatchlistItems } from '../services/supabaseService';
-import { PortfolioItem } from '../types';
+import { DailyWatchlistItem, PortfolioItem } from '../types';
 import { supabase } from '../services/supabase';
 import { SP500_TICKERS } from './SP500Data';
 import { NASDAQ_TICKERS } from './NasdaqData';
 import { CRYPTO_TICKERS } from './CryptoData';
 import { FOREX_TICKERS } from './ForexData';
+import Sp500PaperSimulation from './Sp500PaperSimulation';
+import MarketSimulation from './MarketSimulation';
+import {
+  buildMarksByPositionKey,
+  creditSimCashUsd,
+  applyFetchedMarksToState,
+  fetchMarksForPositions,
+  resolveMarkUsd,
+  loadMarketSimulationState,
+  localStorageKeyForMarketSim,
+  MARKET_SIMULATION_UPDATED_EVENT,
+  type MarketSimulationState,
+  type SimulatedPosition,
+} from '../services/marketSimulation';
+import { getFinnhubToken } from '../services/tradingQuotes';
+import { watchlistUserVisibleLabel } from '../utils/watchlistDisplay';
+import { isSp500OnlyMode } from '../utils/sp500OnlyMode';
+
+const PORTFOLIO_REFRESH_MS = 300_000; // 5 minutes
 
 const TICKER_DIRECTORY = [
   // EQUITIES
@@ -48,6 +67,8 @@ const TICKER_DIRECTORY = [
 
 interface PortfolioProps {
   userId?: string;
+  /** false for administrators — paper buy/sell is for standard members only. */
+  paperTradingAllowed?: boolean;
 }
 
 type LatestWatchlistMetric = {
@@ -63,7 +84,89 @@ type LatestWatchlistMetric = {
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
-const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
+/** `opened_at` is stored as ISO UTC; show in UTC for a clear “bought at” reading. */
+function formatBoughtOnUtc(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return (
+    d.toLocaleString('en-GB', {
+      timeZone: 'UTC',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }) + ' UTC'
+  );
+}
+
+/** Merge vault holdings with paper equity positions for health / what-if rows (by ticker). */
+function mergeVaultAndSimEquities(items: PortfolioItem[], simPositions: SimulatedPosition[]) {
+  const equities = simPositions.filter((p) => p.kind === 'equity');
+  const map = new Map<
+    string,
+    {
+      shares: number;
+      avgCost: number;
+      hasVault: boolean;
+      hasSim: boolean;
+      openedAt?: string;
+      firstBuyPrice?: number;
+    }
+  >();
+
+  for (const i of items) {
+    const t = i.symbol.toUpperCase();
+    map.set(t, {
+      shares: i.shares,
+      avgCost: i.avgCost,
+      hasVault: true,
+      hasSim: false,
+      openedAt: i.openedAt,
+      firstBuyPrice: i.firstBuyPrice ?? i.avgCost,
+    });
+  }
+  for (const p of equities) {
+    const t = p.symbol.toUpperCase();
+    const cur = map.get(t);
+    if (cur) {
+      const sh = cur.shares + p.qty;
+      const vw = sh > 0 ? (cur.shares * cur.avgCost + p.qty * p.avgEntryUsd) / sh : cur.avgCost;
+      map.set(t, {
+        shares: sh,
+        avgCost: vw,
+        hasVault: cur.hasVault,
+        hasSim: true,
+        openedAt: cur.openedAt,
+        firstBuyPrice: cur.firstBuyPrice,
+      });
+    } else {
+      map.set(t, {
+        shares: p.qty,
+        avgCost: p.avgEntryUsd,
+        hasVault: false,
+        hasSim: true,
+        openedAt: undefined,
+        firstBuyPrice: p.avgEntryUsd,
+      });
+    }
+  }
+
+  return [...map.entries()].map(([symbol, v]) => ({
+    symbol,
+    shares: v.shares,
+    avgCost: v.avgCost,
+    openedAt: v.openedAt,
+    firstBuyPrice: v.firstBuyPrice,
+    companyNote:
+      v.hasVault && v.hasSim ? ' · vault + paper' : v.hasSim && !v.hasVault ? ' · paper sim' : '',
+  }));
+}
+
+const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = true }) => {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [marketPrices, setMarketPrices] = useState<Record<string, number>>({});
   const [lastPrices, setLastPrices] = useState<Record<string, number>>({});
@@ -75,12 +178,35 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [itemToDelete, setItemToDelete] = useState<string | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState<'EQUITIES' | 'COMMODITIES' | 'NASDAQ' | 'S&P' | 'CRYPTO' | 'FOREX' | 'ALL'>('EQUITIES');
+  const [selectedCategory, setSelectedCategory] = useState<'EQUITIES' | 'COMMODITIES' | 'NASDAQ' | 'S&P' | 'CRYPTO' | 'FOREX' | 'ALL'>(() =>
+    isSp500OnlyMode() ? 'S&P' : 'EQUITIES',
+  );
   const [liveFxRates, setLiveFxRates] = useState<Record<string, number>>({});
   const [latestWatchlistLabel, setLatestWatchlistLabel] = useState<string>('No watchlist snapshot available');
   const [latestMetricsBySymbol, setLatestMetricsBySymbol] = useState<Record<string, LatestWatchlistMetric>>({});
   const [healthLoading, setHealthLoading] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const explorerCategoryTabs = useMemo(
+    () =>
+      isSp500OnlyMode()
+        ? (['S&P'] as const)
+        : (['EQUITIES', 'COMMODITIES', 'NASDAQ', 'S&P', 'CRYPTO', 'FOREX', 'ALL'] as const),
+    [],
+  );
+
+  useEffect(() => {
+    if (isSp500OnlyMode()) setSelectedCategory('S&P');
+  }, []);
+
+  const [simState, setSimState] = useState<MarketSimulationState>(() =>
+    loadMarketSimulationState(undefined)
+  );
+  /** Live marks for non-equity sim positions (crypto/forex/metal) — refreshed with vault totals. */
+  const [simMarksForKey, setSimMarksForKey] = useState<Record<string, number | undefined>>({});
+  const [vaultSellTarget, setVaultSellTarget] = useState<PortfolioItem | null>(null);
+  const [vaultSellQty, setVaultSellQty] = useState('1');
+  const [vaultSelling, setVaultSelling] = useState(false);
 
   // Manual Entry State
   const [showManualModal, setShowManualModal] = useState(false);
@@ -113,6 +239,32 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     }
   }, [userId]);
 
+  useEffect(() => {
+    const uid = currentUid ?? userId;
+    const sync = () => setSimState(loadMarketSimulationState(uid));
+    sync();
+    window.addEventListener(MARKET_SIMULATION_UPDATED_EVENT, sync);
+    const onStorage = (e: StorageEvent) => {
+      if (!uid || e.key !== localStorageKeyForMarketSim(uid)) return;
+      sync();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(MARKET_SIMULATION_UPDATED_EVENT, sync);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [currentUid, userId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.location.hash !== '#simulated-portfolio') return;
+    if (loading) return;
+    const id = requestAnimationFrame(() =>
+      document.getElementById('simulated-portfolio')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    );
+    return () => cancelAnimationFrame(id);
+  }, [loading]);
+
   // Fetch live forex rates on mount
   useEffect(() => {
     const fetchForexRates = async () => {
@@ -141,9 +293,18 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
 
   const finnhubKey = (import.meta.env.VITE_FINNHUB_KEY as string | undefined)?.trim() || undefined;
 
+  const mergedPriceSymbols = useMemo(() => {
+    const fromSim = simState.positions.filter((p) => p.kind === 'equity').map((p) => p.symbol);
+    return [
+      ...new Set(
+        [...items.map((i) => i.symbol), ...fromSim, addFromListStock?.symbol].filter(Boolean) as string[]
+      ),
+    ];
+  }, [items, simState.positions, addFromListStock?.symbol]);
+
   // Live market prices: Finnhub when key is set, otherwise simulated tick
   useEffect(() => {
-    const symbols = [...new Set([...items.map(i => i.symbol), addFromListStock?.symbol].filter(Boolean) as string[])];
+    const symbols = mergedPriceSymbols;
     if (symbols.length === 0) return;
 
     if (finnhubKey) {
@@ -178,11 +339,17 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
       setMarketPrices(prev => {
         const next = { ...prev };
         const nextLast = { ...prev };
-        items.forEach(item => {
-          const currentPrice = next[item.symbol] || item.avgCost;
+        symbols.forEach((sym) => {
+          const upper = sym.toUpperCase();
+          const item = items.find((i) => i.symbol.toUpperCase() === upper);
+          const simEq = simState.positions.find(
+            (p) => p.kind === 'equity' && p.symbol.toUpperCase() === upper
+          );
+          const seed = item?.avgCost ?? simEq?.avgEntryUsd ?? 100;
+          const currentPrice = next[sym] ?? seed;
           const fluctuation = currentPrice * (Math.random() * 0.002 - 0.001);
-          nextLast[item.symbol] = currentPrice;
-          next[item.symbol] = Number((currentPrice + fluctuation).toFixed(2));
+          nextLast[sym] = currentPrice;
+          next[sym] = Number((currentPrice + fluctuation).toFixed(2));
         });
         setLastPrices(nextLast);
         return next;
@@ -190,7 +357,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
       setLastSync(new Date().toLocaleTimeString());
     }, 3000);
     return () => clearInterval(interval);
-  }, [items.length, addFromListStock?.symbol, finnhubKey]);
+  }, [mergedPriceSymbols, items, simState.positions, finnhubKey]);
 
   // Ensure S&P assets have variety in prices
   useMemo(() => {
@@ -201,67 +368,120 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     });
   }, []);
 
-  const loadPortfolio = async () => {
-    if (!currentUid) return;
-    try {
-      const data = await getPortfolio(currentUid);
-      setItems(data);
-      setError(null);
-      // Initialize market prices with current directory data or avg cost
-      const initialPrices: Record<string, number> = {};
-      data.forEach(item => {
-        const directoryStock = TICKER_DIRECTORY.find(s => s.symbol === item.symbol);
-        initialPrices[item.symbol] = directoryStock ? directoryStock.price : item.avgCost;
-      });
-      setMarketPrices(initialPrices);
-      setLastSync(new Date().toLocaleTimeString());
-    } catch (e: any) {
-      setError("Sync interrupted: " + (e?.message || 'Could not load portfolio'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { loadPortfolio(); }, [currentUid]);
+  const loadPortfolio = useCallback(
+    async (attempt = 0) => {
+      if (!currentUid) return;
+      try {
+        const data = await getPortfolio(currentUid);
+        setItems(data);
+        setError(null);
+        const initialPrices: Record<string, number> = {};
+        data.forEach((item) => {
+          const directoryStock = TICKER_DIRECTORY.find((s) => s.symbol === item.symbol);
+          initialPrices[item.symbol] = directoryStock ? directoryStock.price : item.avgCost;
+        });
+        setMarketPrices((prev) => ({ ...initialPrices, ...prev }));
+        setLastSync(new Date().toLocaleTimeString());
+      } catch (e: any) {
+        const msg = String(e?.message ?? '');
+        const authLockAbort =
+          e?.name === 'AbortError' || /Lock broken|steal option/i.test(msg);
+        if (authLockAbort && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 400 + attempt * 400));
+          return loadPortfolio(attempt + 1);
+        }
+        setError('Sync interrupted: ' + (msg || 'Could not load portfolio'));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [currentUid]
+  );
 
   useEffect(() => {
-    const loadLatestWatchlistHealth = async () => {
-      setHealthLoading(true);
-      try {
-        const latest = await getDailyWatchlist();
-        if (!latest) {
-          setLatestWatchlistLabel('No watchlist snapshot available');
-          setLatestMetricsBySymbol({});
-          return;
-        }
-        const label = (latest as any).label || `WatchList-of-${latest.watchlist_date}`;
-        setLatestWatchlistLabel(label);
-        const rows = await getDailyWatchlistItems(latest.id, latest.watchlist_date);
-        const mapped: Record<string, LatestWatchlistMetric> = {};
-        (rows || []).forEach((r: any) => {
-          const t = String(r.symbol || '').toUpperCase();
-          if (!t) return;
-          mapped[t] = {
-            symbol: t,
-            company: r.company || '',
-            current_price: r.current_price ?? null,
-            iv_ensemble: r.iv_ensemble ?? null,
-            iv_upside_pct: r.iv_upside_pct ?? null,
-            risk_summary_score: r.risk_summary_score ?? null,
-            torchlight_score: r.torchlight_score ?? null,
-            torchlight_sentiment: r.torchlight_sentiment ?? null,
-          };
-        });
-        setLatestMetricsBySymbol(mapped);
-      } catch {
-        setLatestWatchlistLabel('Could not load latest watchlist snapshot');
-        setLatestMetricsBySymbol({});
-      } finally {
-        setHealthLoading(false);
-      }
+    void loadPortfolio();
+    const id = window.setInterval(() => void loadPortfolio(), PORTFOLIO_REFRESH_MS);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void loadPortfolio();
     };
-    loadLatestWatchlistHealth();
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [loadPortfolio]);
+
+  const loadLatestWatchlistHealth = useCallback(async () => {
+    setHealthLoading(true);
+    try {
+      const latest = await getDailyWatchlist();
+      if (!latest) {
+        setLatestWatchlistLabel('No watchlist snapshot available');
+        setLatestMetricsBySymbol({});
+        return;
+      }
+      setLatestWatchlistLabel(watchlistUserVisibleLabel(latest));
+      const rows = await getDailyWatchlistItems(latest.id, latest.watchlist_date);
+      const mapped: Record<string, LatestWatchlistMetric> = {};
+      (rows || []).forEach((r: DailyWatchlistItem) => {
+        const t = String(r.symbol || '').toUpperCase();
+        if (!t) return;
+        mapped[t] = {
+          symbol: t,
+          company: r.company || '',
+          current_price: r.current_price ?? null,
+          iv_ensemble: r.iv_ensemble ?? null,
+          iv_upside_pct: r.iv_upside_pct ?? null,
+          risk_summary_score: r.risk_summary_score ?? null,
+          torchlight_score: r.torchlight_score ?? null,
+          torchlight_sentiment: r.torchlight_sentiment ?? null,
+        };
+      });
+      setLatestMetricsBySymbol(mapped);
+    } catch {
+      setLatestWatchlistLabel('Could not load latest watchlist snapshot');
+      setLatestMetricsBySymbol({});
+    } finally {
+      setHealthLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadLatestWatchlistHealth();
+    const {
+      data: { subscription: authSub },
+    } = supabase.auth.onAuthStateChange(() => {
+      void loadLatestWatchlistHealth();
+    });
+    const channel = supabase
+      .channel('portfolio-daily-watchlist')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'daily_watchlist' },
+        () => {
+          void loadLatestWatchlistHealth();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'daily_watchlist_items' },
+        () => {
+          void loadLatestWatchlistHealth();
+        }
+      )
+      .subscribe();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void loadLatestWatchlistHealth();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    const poll = window.setInterval(() => void loadLatestWatchlistHealth(), PORTFOLIO_REFRESH_MS);
+    return () => {
+      authSub.unsubscribe();
+      supabase.removeChannel(channel);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(poll);
+    };
+  }, [loadLatestWatchlistHealth]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -282,7 +502,9 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
       ...f,
       price: liveFxRates[f.symbol] ?? f.price,
     }));
-    const MASTER_DIRECTORY = [...TICKER_DIRECTORY, ...SP500_TICKERS, ...NASDAQ_TICKERS, ...CRYPTO_TICKERS, ...forexWithLiveRates];
+    const MASTER_DIRECTORY = isSp500OnlyMode()
+      ? [...SP500_TICKERS]
+      : [...TICKER_DIRECTORY, ...SP500_TICKERS, ...NASDAQ_TICKERS, ...CRYPTO_TICKERS, ...forexWithLiveRates];
 
     const baseList = selectedCategory === 'ALL'
       ? MASTER_DIRECTORY
@@ -393,14 +615,122 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     }
   };
 
-  const totalValuation = items.reduce((acc, i) => acc + (i.shares * (marketPrices[i.symbol] || i.avgCost)), 0);
-  const totalCost = items.reduce((acc, i) => acc + (i.shares * i.avgCost), 0);
+  const refreshSimMarks = useCallback(async () => {
+    const uid = currentUid ?? userId;
+    if (!uid) {
+      setSimMarksForKey({});
+      return;
+    }
+    const st = loadMarketSimulationState(uid);
+    if (st.positions.length === 0) {
+      setSimMarksForKey({});
+      return;
+    }
+    try {
+      const maps = await fetchMarksForPositions(st.positions, getFinnhubToken());
+      const byKey = buildMarksByPositionKey(st.positions, maps);
+      applyFetchedMarksToState(uid, st.positions, byKey);
+      setSimMarksForKey(byKey);
+    } catch {
+      const cleared: Record<string, number | undefined> = {};
+      st.positions.forEach((p) => {
+        cleared[p.key] = undefined;
+      });
+      setSimMarksForKey(cleared);
+    }
+  }, [currentUid, userId]);
+
+  useEffect(() => {
+    void refreshSimMarks();
+    const id = window.setInterval(() => void refreshSimMarks(), PORTFOLIO_REFRESH_MS);
+    const ev = () => void refreshSimMarks();
+    window.addEventListener(MARKET_SIMULATION_UPDATED_EVENT, ev);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void refreshSimMarks();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener(MARKET_SIMULATION_UPDATED_EVENT, ev);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [refreshSimMarks]);
+
+  const mergedEquityHoldings = useMemo(
+    () => mergeVaultAndSimEquities(items, simState.positions),
+    [items, simState.positions]
+  );
+
+  const nonEqSimPositions = useMemo(
+    () => simState.positions.filter((p) => p.kind !== 'equity'),
+    [simState.positions]
+  );
+
+  const totalValuation = useMemo(() => {
+    let v = simState.cashUsd;
+    for (const h of mergedEquityHoldings) {
+      const px = marketPrices[h.symbol] ?? h.avgCost;
+      v += h.shares * px;
+    }
+    for (const p of nonEqSimPositions) {
+      const live = simMarksForKey[p.key];
+      v += p.qty * resolveMarkUsd(p, live, simState.lastGoodMarksByKey);
+    }
+    return v;
+  }, [mergedEquityHoldings, nonEqSimPositions, marketPrices, simState.cashUsd, simState.lastGoodMarksByKey, simMarksForKey]);
+
+  const principalCapital = useMemo(() => {
+    let c = 0;
+    mergedEquityHoldings.forEach((h) => {
+      c += h.shares * h.avgCost;
+    });
+    nonEqSimPositions.forEach((p) => {
+      c += p.qty * p.avgEntryUsd;
+    });
+    return c;
+  }, [mergedEquityHoldings, nonEqSimPositions]);
+
+  /** Unrealized P/L on deployed positions (idle simulated cash excluded). */
+  const netPerformance = totalValuation - simState.cashUsd - principalCapital;
+
+  const handleVaultSellConfirm = async () => {
+    if (!currentUid || !vaultSellTarget) return;
+    const max = vaultSellTarget.shares;
+    const qty = parseFloat(String(vaultSellQty).replace(/,/g, ''));
+    if (!Number.isFinite(qty) || qty <= 0) return;
+    const sellQty = Math.min(qty, max);
+    const px = marketPrices[vaultSellTarget.symbol] ?? vaultSellTarget.avgCost;
+    const proceeds = sellQty * px;
+    setVaultSelling(true);
+    try {
+      if (sellQty >= max - 1e-9) {
+        await removeStock(currentUid, vaultSellTarget.symbol);
+      } else {
+        await updateStock(currentUid, vaultSellTarget.symbol, { shares: max - sellQty });
+      }
+      creditSimCashUsd(currentUid, proceeds);
+      await loadPortfolio();
+      setVaultSellTarget(null);
+      setVaultSellQty('1');
+    } catch (e: any) {
+      setError(e?.message || 'Sell failed');
+    } finally {
+      setVaultSelling(false);
+    }
+  };
 
   const portfolioHealth = useMemo(() => {
-    const rows = items.map((item) => {
-      const ticker = item.symbol.toUpperCase();
-      const livePrice = marketPrices[item.symbol] || item.avgCost;
-      const value = item.shares * livePrice;
+    const mergedHoldings = mergeVaultAndSimEquities(items, simState.positions);
+
+    const VALUE_EPS = 1e-6;
+    const PL_EPS = 0.005;
+
+    const rows = mergedHoldings.map((hold) => {
+      const ticker = hold.symbol.toUpperCase();
+      const livePrice = marketPrices[hold.symbol] || hold.avgCost;
+      const value = hold.shares * livePrice;
+      const costBasis = hold.shares * hold.avgCost;
+      const unrealizedPl = value - costBasis;
       const snapshot = latestMetricsBySymbol[ticker];
       const ivEnsemble = snapshot?.iv_ensemble ?? null;
       const ivUpsidePct = snapshot?.iv_upside_pct ?? null;
@@ -424,11 +754,25 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
           : sentimentScore <= 40
             ? 'Negative'
             : 'Neutral';
+      const baseName = snapshot?.company || '';
+      const company = baseName ? `${baseName}${hold.companyNote}` : `${ticker}${hold.companyNote}`;
+
+      const unrealizedPlPct = costBasis > VALUE_EPS ? (unrealizedPl / costBasis) * 100 : 0;
+      const avgBuyShare = hold.avgCost;
+      const firstPurchaseShare =
+        hold.firstBuyPrice != null && Number.isFinite(hold.firstBuyPrice) ? hold.firstBuyPrice : hold.avgCost;
+
       return {
         ticker,
-        company: snapshot?.company || '',
+        company,
         livePrice,
         value,
+        costBasis,
+        avgBuyShare,
+        firstPurchaseShare,
+        unrealizedPl,
+        unrealizedPlPct,
+        acquiredLabel: formatBoughtOnUtc(hold.openedAt),
         ivEnsemble,
         ivUpsidePct,
         priceDown,
@@ -443,17 +787,41 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
     });
 
     const covered = rows.filter((r) => r.ivEnsemble != null || r.riskSummary != null || r.torchlight != null);
-    const total = rows.reduce((a, b) => a + b.value, 0);
-    const weighted = (getter: (r: typeof rows[number]) => number | null) =>
+    const hasNonZeroValue = (r: (typeof rows)[number]) => Math.abs(r.value) > VALUE_EPS;
+    const totalDeployed = rows.filter(hasNonZeroValue).reduce((a, r) => a + r.value, 0);
+
+    const hasNonZeroSentiment = (r: (typeof rows)[number]) =>
+      r.sentimentScore != null && Number.isFinite(r.sentimentScore) && Math.abs(r.sentimentScore) > 1e-9;
+    const hasNonZeroPL = (r: (typeof rows)[number]) =>
+      Number.isFinite(r.unrealizedPl) && Math.abs(r.unrealizedPl) > PL_EPS;
+    const qualifiesForMetricAvg = (r: (typeof rows)[number]) => hasNonZeroSentiment(r) || hasNonZeroPL(r);
+    const signalPool = rows.filter(qualifiesForMetricAvg);
+
+    const weightedByDeployedValue = (getter: (r: (typeof rows)[number]) => number | null) =>
       rows.reduce((acc, r) => {
-        const w = total > 0 ? r.value / total : 0;
+        if (!hasNonZeroValue(r)) return acc;
+        const w = totalDeployed > 0 ? r.value / totalDeployed : 0;
         const v = getter(r);
-        return acc + (v != null ? w * v : 0);
+        return acc + (v != null && Number.isFinite(v) ? w * v : 0);
       }, 0);
 
-    const weightedRisk = weighted((r) => r.riskSummary);
-    const weightedTorch = weighted((r) => r.torchlight);
-    const weightedIvUpside = weighted((r) => r.ivUpsidePct);
+    const equalMeanAmongPool = (getter: (r: (typeof rows)[number]) => number | null | undefined) => {
+      const vals = signalPool.map(getter).filter((v): v is number => v != null && Number.isFinite(v));
+      if (!vals.length) return 0;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    };
+
+    const useSignalPool = signalPool.length > 0;
+    const weightedRisk = useSignalPool
+      ? equalMeanAmongPool((r) => r.riskSummary)
+      : weightedByDeployedValue((r) => r.riskSummary);
+    const weightedTorch = useSignalPool
+      ? equalMeanAmongPool((r) => r.torchlight)
+      : weightedByDeployedValue((r) => r.torchlight);
+    const weightedIvUpside = useSignalPool
+      ? equalMeanAmongPool((r) => r.ivUpsidePct)
+      : weightedByDeployedValue((r) => r.ivUpsidePct);
+
     const coveragePct = rows.length ? (covered.length / rows.length) * 100 : 0;
     return {
       rows,
@@ -461,8 +829,11 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
       weightedTorch,
       weightedIvUpside,
       coveragePct,
+      /** Tickers with sentiment ≠ 0 or |unrealized P/L| &gt; ~$0 — used as equal-weight average denominator when non-empty. */
+      signalPoolCount: signalPool.length,
+      usedSignalPoolForAvg: useSignalPool,
     };
-  }, [items, marketPrices, latestMetricsBySymbol]);
+  }, [items, simState.positions, marketPrices, latestMetricsBySymbol]);
 
   if (loading) return (
     <div className="flex flex-col items-center justify-center py-40 animate-pulse">
@@ -487,6 +858,61 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
         </div>
       )}
       {/* Delete Confirmation Modal */}
+      {vaultSellTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full border border-slate-100 animate-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-black text-slate-900 mb-2">Sell from vault</h3>
+            <p className="text-slate-500 text-sm font-medium mb-4 leading-relaxed">
+              Sell at the live mark. Proceeds are credited to your <span className="font-semibold text-indigo-700">simulated cash</span>{' '}
+              (paper-trading wealth).
+            </p>
+            <p className="text-xs font-bold text-slate-700 mb-2">
+              {vaultSellTarget.symbol} · max {vaultSellTarget.shares.toLocaleString()} shares
+            </p>
+            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Shares to sell</label>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={vaultSellQty}
+              onChange={(e) => setVaultSellQty(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-slate-200 font-mono font-bold mb-4"
+            />
+            <p className="text-xs text-slate-600 mb-6">
+              Est. proceeds:{' '}
+              <span className="font-black text-emerald-700">
+                $
+                {(
+                  Math.min(
+                    parseFloat(String(vaultSellQty).replace(/,/g, '')) || 0,
+                    vaultSellTarget.shares
+                  ) * (marketPrices[vaultSellTarget.symbol] ?? vaultSellTarget.avgCost)
+                ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </p>
+            <div className="flex space-x-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setVaultSellTarget(null);
+                  setVaultSellQty('1');
+                }}
+                className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={vaultSelling}
+                onClick={() => void handleVaultSellConfirm()}
+                className="flex-1 px-4 py-3 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg disabled:opacity-50"
+              >
+                {vaultSelling ? '…' : 'Sell & credit cash'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {itemToDelete && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white rounded-3xl shadow-2xl p-8 max-w-sm w-full border border-slate-100 animate-in zoom-in-95 duration-200">
@@ -565,16 +991,34 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
           <p className="text-4xl font-black tracking-tighter transition-all duration-1000">
             ${totalValuation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
+          <p className="text-[9px] font-semibold text-slate-500 mt-2 leading-snug">
+            Total wealth at <strong className="text-slate-400">current market marks</strong> (vault + simulated cash &amp; positions).{' '}
+            Unrealized vs cost (open positions):{' '}
+            <strong className={netPerformance >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+              {netPerformance >= 0 ? '+' : '-'}$
+              {Math.abs(netPerformance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </strong>
+            · Refreshes ~every {PORTFOLIO_REFRESH_MS / 60_000} min
+          </p>
         </div>
         <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
           <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Principal Capital</h3>
-          <p className="text-4xl font-black text-slate-900 tracking-tighter">${totalCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+          <p className="text-4xl font-black text-slate-900 tracking-tighter">
+            ${principalCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <p className="text-[9px] font-semibold text-slate-400 mt-2">Cost basis in open positions (vault + paper)</p>
         </div>
         <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
           <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Net Performance</h3>
-          <p className={`text-4xl font-black tracking-tighter transition-all duration-1000 ${totalValuation >= totalCost ? 'text-emerald-500' : 'text-rose-500'}`}>
-            {totalValuation >= totalCost ? '+' : '-'}${Math.abs(totalValuation - totalCost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <p
+            className={`text-4xl font-black tracking-tighter transition-all duration-1000 ${
+              netPerformance >= 0 ? 'text-emerald-500' : 'text-rose-500'
+            }`}
+          >
+            {netPerformance >= 0 ? '+' : '-'}$
+            {Math.abs(netPerformance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
+          <p className="text-[9px] font-semibold text-slate-400 mt-2">Unrealized P/L on holdings (excludes idle cash)</p>
         </div>
       </div>
 
@@ -583,7 +1027,8 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
           <div>
             <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Portfolio Health & 3M What-If Scenarios</h3>
             <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-1">
-              Source: {latestWatchlistLabel}
+              Vault + paper-traded equities (Market Simulation){' '}
+              <span className="text-slate-400 font-semibold normal-case">·</span> Source: {latestWatchlistLabel}
             </p>
           </div>
           <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
@@ -592,27 +1037,51 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
           <div className="border border-slate-100 rounded-xl p-3">
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Weighted Risk Summary</p>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Risk Summary (portfolio avg)</p>
             <p className="text-2xl font-black text-slate-800">{portfolioHealth.weightedRisk.toFixed(1)}</p>
+            <p className="text-[9px] text-slate-400 mt-1 leading-snug">
+              {portfolioHealth.usedSignalPoolForAvg
+                ? `Equal-weight among ${portfolioHealth.signalPoolCount} ticker(s) with sentiment ≠ 0 or unrealized gain/loss. Each metric ÷ count of that group with data.`
+                : 'Value-weighted over positions with non-zero market value (no sentiment/P/L signal pool).'}
+            </p>
           </div>
           <div className="border border-slate-100 rounded-xl p-3">
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Weighted Torchlight</p>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Torchlight (portfolio avg)</p>
             <p className="text-2xl font-black text-indigo-700">{portfolioHealth.weightedTorch.toFixed(1)}</p>
+            <p className="text-[9px] text-slate-400 mt-1 leading-snug">
+              {portfolioHealth.usedSignalPoolForAvg
+                ? `Same pool (${portfolioHealth.signalPoolCount} ticker(s)).`
+                : 'Value-weighted on non-zero market value only.'}
+            </p>
           </div>
           <div className="border border-slate-100 rounded-xl p-3">
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Weighted IV Upside</p>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">IV Upside (portfolio avg)</p>
             <p className={`text-2xl font-black ${portfolioHealth.weightedIvUpside >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
               {portfolioHealth.weightedIvUpside.toFixed(2)}%
+            </p>
+            <p className="text-[9px] text-slate-400 mt-1 leading-snug">
+              {portfolioHealth.usedSignalPoolForAvg
+                ? `Same pool (${portfolioHealth.signalPoolCount} ticker(s)).`
+                : 'Value-weighted on non-zero market value only.'}
             </p>
           </div>
         </div>
         <div className="overflow-x-auto border border-slate-100 rounded-xl">
-          <table className="w-full text-xs min-w-[980px]">
+          <table className="w-full text-xs min-w-[1280px]">
             <thead className="bg-slate-50">
               <tr>
                 <th className="px-3 py-2 text-left font-black text-slate-500 uppercase">Ticker</th>
                 <th className="px-3 py-2 text-left font-black text-slate-500 uppercase">Company</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 whitespace-nowrap uppercase">
+                  Last buy (UTC)
+                </th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">1st purchase $/sh</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Blended avg $/sh</th>
                 <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Live Price</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Cost basis</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">Value</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">P/L $</th>
+                <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">P/L %</th>
                 <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">IV (Latest)</th>
                 <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">IV Upside</th>
                 <th className="px-3 py-2 text-right font-black text-slate-500 uppercase">3M What-If (Down)</th>
@@ -628,7 +1097,31 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
                 <tr key={r.ticker} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-black text-slate-800">{r.ticker}</td>
                   <td className="px-3 py-2 text-slate-600">{r.company || '—'}</td>
+                  <td className="px-3 py-2 text-right text-slate-600 whitespace-nowrap">{r.acquiredLabel}</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-800 font-semibold">${r.firstPurchaseShare.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-600">${r.avgBuyShare.toFixed(2)}</td>
                   <td className="px-3 py-2 text-right font-mono">${r.livePrice.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-slate-600">
+                    ${r.costBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold">
+                    ${r.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-mono font-bold ${
+                      r.unrealizedPl >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                    }`}
+                  >
+                    {r.unrealizedPl >= 0 ? '+' : '-'}$
+                    {Math.abs(r.unrealizedPl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-mono font-bold ${
+                      r.unrealizedPlPct >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                    }`}
+                  >
+                    {Number.isFinite(r.unrealizedPlPct) ? `${r.unrealizedPlPct >= 0 ? '+' : ''}${r.unrealizedPlPct.toFixed(2)}%` : '—'}
+                  </td>
                   <td className="px-3 py-2 text-right font-mono">{r.ivEnsemble != null ? `$${r.ivEnsemble.toFixed(2)}` : '—'}</td>
                   <td className={`px-3 py-2 text-right font-mono font-bold ${(r.ivUpsidePct ?? 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                     {r.ivUpsidePct != null ? `${r.ivUpsidePct.toFixed(2)}%` : '—'}
@@ -647,13 +1140,19 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
               ))}
               {!healthLoading && portfolioHealth.rows.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-3 py-6 text-center text-slate-400 font-medium">No portfolio holdings.</td>
+                  <td colSpan={18} className="px-3 py-6 text-center text-slate-400 font-medium">
+                    No holdings — add assets from the explorer or paper-trade from the S&amp;P simulation block below.
+                  </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      <section id="simulated-portfolio" className="scroll-mt-24">
+        <MarketSimulation userId={currentUid ?? userId ?? null} embedded />
+      </section>
 
       <div className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm relative z-50" ref={dropdownRef}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
@@ -662,7 +1161,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
             Market Explorer
           </h3>
           <div className="flex items-center bg-slate-100 p-1 rounded-xl overflow-x-auto no-scrollbar">
-            {(['EQUITIES', 'COMMODITIES', 'NASDAQ', 'S&P', 'CRYPTO', 'FOREX', 'ALL'] as const).map((cat) => (
+            {explorerCategoryTabs.map((cat) => (
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
@@ -799,12 +1298,20 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
       )}
 
       <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
-        <div className="px-8 py-6 border-b border-slate-50 bg-slate-50/50 flex justify-between items-center">
+        <div className="px-8 py-6 border-b border-slate-50 bg-slate-50/50 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center space-x-4">
             <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Holding Ledger</h3>
             <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
           </div>
-          {lastSync && <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Live Pulse: {lastSync}</span>}
+          <p className="text-[10px] text-slate-500 font-medium max-w-xl leading-snug">
+            <strong className="text-slate-600">Last buy (UTC)</strong> is set to the current UTC date and time on every purchase.{' '}
+            <strong className="text-slate-600">First purchase $/sh</strong> stays fixed from your first fill; blended average updates when you add shares (P/L uses blended cost basis).
+          </p>
+          {lastSync && (
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter shrink-0">
+              Live Pulse: {lastSync}
+            </span>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left">
@@ -812,16 +1319,21 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
               <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-50">
                 <th className="px-8 py-5">Asset Identifier</th>
                 <th className="px-8 py-5 text-center">Volume</th>
-                <th className="px-8 py-5">Avg. Buy-In (Mark)</th>
-                <th className="px-8 py-5">Live Price (Mark)</th>
-                <th className="px-8 py-5">Market Value (Mark)</th>
-                <th className="px-8 py-5 text-right">Actions</th>
+                <th className="px-8 py-5 whitespace-nowrap">Last buy (UTC)</th>
+                <th className="px-8 py-5">First purchase $/sh</th>
+                <th className="px-8 py-5">Blended avg $/sh</th>
+                <th className="px-8 py-5">Live Price</th>
+                <th className="px-8 py-5">Cost basis</th>
+                <th className="px-8 py-5">Market value</th>
+                <th className="px-8 py-5">Unrealized P/L</th>
+                <th className="px-8 py-5">P/L %</th>
+                <th className="px-8 py-5 text-right">Sell / Remove</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {items.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-8 py-20 text-center text-slate-300 font-bold uppercase tracking-[0.2em] text-[10px] italic">
+                  <td colSpan={11} className="px-8 py-20 text-center text-slate-300 font-bold uppercase tracking-[0.2em] text-[10px] italic">
                     Vault empty. Use explorer to acquire assets.
                   </td>
                 </tr>
@@ -831,7 +1343,14 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
                   const prevPrice = lastPrices[item.symbol];
                   const priceUp = prevPrice != null && currentPrice > prevPrice;
                   const priceDown = prevPrice != null && currentPrice < prevPrice;
-                  const isUp = currentPrice >= item.avgCost;
+                  const costBasis = item.shares * item.avgCost;
+                  const marketValue = item.shares * currentPrice;
+                  const unrealizedPl = marketValue - costBasis;
+                  const unrealizedPct = costBasis > 1e-9 ? (unrealizedPl / costBasis) * 100 : 0;
+                  const firstPurchase =
+                    item.firstBuyPrice != null && Number.isFinite(item.firstBuyPrice)
+                      ? item.firstBuyPrice
+                      : item.avgCost;
                   const isEditing = editingVolumeSymbol === item.symbol;
                   return (
                     <tr key={item.symbol} className="hover:bg-slate-50/50 transition-all group">
@@ -866,24 +1385,50 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
                           </button>
                         )}
                       </td>
-                      <td className="px-8 py-5 font-bold text-slate-500 text-xs">${item.avgCost.toFixed(2)}</td>
+                      <td className="px-8 py-5 text-xs font-semibold text-slate-700 whitespace-nowrap">
+                        {formatBoughtOnUtc(item.openedAt)}
+                      </td>
+                      <td className="px-8 py-5 font-black text-slate-900 text-sm tabular-nums">
+                        ${firstPurchase.toFixed(2)}
+                      </td>
+                      <td className="px-8 py-5 font-bold text-slate-600 text-xs tabular-nums">${item.avgCost.toFixed(2)}</td>
                       <td className="px-8 py-5 font-black text-sm">
                         <span className={`transition-all duration-300 rounded px-2 py-1 inline-block ${priceUp ? 'text-emerald-600 bg-emerald-50' : priceDown ? 'text-rose-600 bg-rose-50' : 'text-slate-700'}`}>
                           ${currentPrice.toFixed(2)}
                         </span>
                       </td>
-                      <td className="px-8 py-5 font-black text-sm">
-                        <span className={isUp ? 'text-emerald-600' : 'text-rose-600'}>
-                          ${(item.shares * currentPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
+                      <td className="px-8 py-5 font-bold text-slate-600 text-xs">
+                        ${costBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="px-8 py-5 text-right">
+                      <td className="px-8 py-5 font-black text-sm text-slate-900">
+                        ${marketValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className={`px-8 py-5 font-black text-sm ${unrealizedPl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {unrealizedPl >= 0 ? '+' : '-'}$
+                        {Math.abs(unrealizedPl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className={`px-8 py-5 font-black text-sm ${unrealizedPct >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {Number.isFinite(unrealizedPct) ? `${unrealizedPct >= 0 ? '+' : ''}${unrealizedPct.toFixed(2)}%` : '—'}
+                      </td>
+                      <td className="px-8 py-5 text-right whitespace-nowrap">
                         <button
+                          type="button"
+                          onClick={() => {
+                            setVaultSellTarget(item);
+                            setVaultSellQty(String(item.shares));
+                          }}
+                          className="mr-2 px-3 py-2 text-[10px] font-black uppercase tracking-wide text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-xl transition-all"
+                        >
+                          Sell
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => handleInitiateRemove(item.symbol)}
                           disabled={isDeleting === item.symbol}
-                          className="p-3 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-2xl transition-all"
+                          className="p-3 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-2xl transition-all align-middle"
+                          title="Remove without crediting simulated cash"
                         >
-                          {isDeleting === item.symbol ? "..." : "🗑️"}
+                          {isDeleting === item.symbol ? '…' : '🗑️'}
                         </button>
                       </td>
                     </tr>
@@ -894,6 +1439,9 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId }) => {
           </table>
         </div>
       </div>
+
+      <Sp500PaperSimulation userId={currentUid ?? userId ?? null} paperTradingAllowed={paperTradingAllowed} />
+
       <p className="text-[8px] font-black text-slate-400 text-center uppercase tracking-widest opacity-30 mt-10 italic">
         Real-time pricing is simulated for institutional demonstration. All market valuations are processed via the Secure Handshake protocol.
       </p>

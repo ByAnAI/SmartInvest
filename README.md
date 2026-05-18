@@ -1,177 +1,116 @@
-# Supabase CLI
+# SmartInvest
 
-[![Coverage Status](https://coveralls.io/repos/github/supabase/cli/badge.svg?branch=main)](https://coveralls.io/github/supabase/cli?branch=main) [![Bitbucket Pipelines](https://img.shields.io/bitbucket/pipelines/supabase-cli/setup-cli/master?style=flat-square&label=Bitbucket%20Canary)](https://bitbucket.org/supabase-cli/setup-cli/pipelines) [![Gitlab Pipeline Status](https://img.shields.io/gitlab/pipeline-status/sweatybridge%2Fsetup-cli?label=Gitlab%20Canary)
-](https://gitlab.com/sweatybridge/setup-cli/-/pipelines)
+SmartInvest is a React + TypeScript + Supabase investment research app with:
 
-[Supabase](https://supabase.io) is an open source Firebase alternative. We're building the features of Firebase using enterprise-grade open source tools.
+- email/password authentication (no email verification in local setup),
+- admin dashboard for user management and watchlist creation,
+- FastAPI + Yahoo Finance data enrichment,
+- AI analysis for ticker/sector insights,
+- portfolio health and risk metrics.
 
-This repository contains all the functionality for Supabase CLI.
+## Quick Start (Local)
 
-- [x] Running Supabase locally
-- [x] Managing database migrations
-- [x] Creating and deploying Supabase Functions
-- [x] Generating types directly from your database schema
-- [x] Making authenticated HTTP requests to [Management API](https://supabase.com/docs/reference/api/introduction)
-
-## Getting started
-
-### Install the CLI
-
-Available via [NPM](https://www.npmjs.com) as dev dependency. To install:
+### 1) Clone and install frontend dependencies
 
 ```bash
-npm i supabase --save-dev
+git clone <your-repo-url>
+cd SmartInvest
+npm install
 ```
 
-When installing with yarn 4, you need to disable experimental fetch with the following nodejs config.
+### 2) Configure environment variables
 
-```
-NODE_OPTIONS=--no-experimental-fetch yarn add supabase
-```
-
-> **Note**
-For Bun versions below v1.0.17, you must add `supabase` as a [trusted dependency](https://bun.sh/guides/install/trusted) before running `bun add -D supabase`.
-
-<details>
-  <summary><b>macOS</b></summary>
-
-  Available via [Homebrew](https://brew.sh). To install:
-
-  ```sh
-  brew install supabase/tap/supabase
-  ```
-
-  To install the beta release channel:
-  
-  ```sh
-  brew install supabase/tap/supabase-beta
-  brew link --overwrite supabase-beta
-  ```
-  
-  To upgrade:
-
-  ```sh
-  brew upgrade supabase
-  ```
-</details>
-
-<details>
-  <summary><b>Windows</b></summary>
-
-  Available via [Scoop](https://scoop.sh). To install:
-
-  ```powershell
-  scoop bucket add supabase https://github.com/supabase/scoop-bucket.git
-  scoop install supabase
-  ```
-
-  To upgrade:
-
-  ```powershell
-  scoop update supabase
-  ```
-</details>
-
-<details>
-  <summary><b>Linux</b></summary>
-
-  Available via [Homebrew](https://brew.sh) and Linux packages.
-
-  #### via Homebrew
-
-  To install:
-
-  ```sh
-  brew install supabase/tap/supabase
-  ```
-
-  To upgrade:
-
-  ```sh
-  brew upgrade supabase
-  ```
-
-  #### via Linux packages
-
-  Linux packages are provided in [Releases](https://github.com/supabase/cli/releases). To install, download the `.apk`/`.deb`/`.rpm`/`.pkg.tar.zst` file depending on your package manager and run the respective commands.
-
-  ```sh
-  sudo apk add --allow-untrusted <...>.apk
-  ```
-
-  ```sh
-  sudo dpkg -i <...>.deb
-  ```
-
-  ```sh
-  sudo rpm -i <...>.rpm
-  ```
-
-  ```sh
-  sudo pacman -U <...>.pkg.tar.zst
-  ```
-</details>
-
-<details>
-  <summary><b>Other Platforms</b></summary>
-
-  You can also install the CLI via [go modules](https://go.dev/ref/mod#go-install) without the help of package managers.
-
-  ```sh
-  go install github.com/supabase/cli@latest
-  ```
-
-  Add a symlink to the binary in `$PATH` for easier access:
-
-  ```sh
-  ln -s "$(go env GOPATH)/bin/cli" /usr/bin/supabase
-  ```
-
-  This works on other non-standard Linux distros.
-</details>
-
-<details>
-  <summary><b>Community Maintained Packages</b></summary>
-
-  Available via [pkgx](https://pkgx.sh/). Package script [here](https://github.com/pkgxdev/pantry/blob/main/projects/supabase.com/cli/package.yml).
-  To install in your working directory:
-
-  ```bash
-  pkgx install supabase
-  ```
-
-  Available via [Nixpkgs](https://nixos.org/). Package script [here](https://github.com/NixOS/nixpkgs/blob/master/pkgs/development/tools/supabase-cli/default.nix).
-</details>
-
-### Run the CLI
+Create `.env` from `.env.example` and fill values:
 
 ```bash
-supabase bootstrap
+cp .env.example .env
 ```
 
-Or using npx:
+Required values are documented in `.env.example`.
+
+### 3) Start local Supabase
 
 ```bash
-npx supabase bootstrap
+supabase start
 ```
 
-The bootstrap command will guide you through the process of setting up a Supabase project using one of the [starter](https://github.com/supabase-community/supabase-samples/blob/main/samples.json) templates.
+This project is configured with email confirmations disabled locally in `supabase/config.toml`:
 
-## Docs
+- `auth.email.enable_confirmations = false`
 
-Command & config reference can be found [here](https://supabase.com/docs/reference/cli/about).
+### 4) Provision/update admin account
 
-## Breaking changes
+Run this after `supabase start`:
 
-We follow semantic versioning for changes that directly impact CLI commands, flags, and configurations.
+```bash
+SUPABASE_URL=http://127.0.0.1:54321 \
+SUPABASE_SERVICE_ROLE_KEY="$(supabase status -o env | sed -n 's/^SERVICE_ROLE_KEY=\"\\(.*\\)\"/\\1/p')" \
+ADMIN_EMAIL=admin@bts.com \
+ADMIN_PASSWORD='abCD123!@#' \
+node scripts/set-admin-user.mjs
+```
 
-However, due to dependencies on other service images, we cannot guarantee that schema migrations, seed.sql, and generated types will always work for the same CLI major version. If you need such guarantees, we encourage you to pin a specific version of CLI in package.json.
+### 5) Start backend Watchlist API
 
-## Developing
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
-To run from source:
+### 6) Start frontend
 
-```sh
-# Go >= 1.22
-go run . help
+In a second terminal:
+
+```bash
+cd SmartInvest
+npm run dev
+```
+
+Open the local URL shown by Vite (usually `http://localhost:3000` or `http://localhost:3001`).
+
+## Admin and User Behavior
+
+- Any user can sign up with email/password.
+- Email verification is disabled in local Supabase config.
+- Master admin email defaults to `admin@bts.com`.
+- Admin can create watchlists and perform admin functions.
+- Regular users can perform user functions (portfolio, AI analysis, etc.).
+
+## Included Initialization Data (CSV)
+
+Required CSV files are already committed in this repo:
+
+- `backend/data/company_fundamentals.csv`
+- `components/S&P500_instrument.csv`
+- `components/nasdaq_list.csv`
+- `components/top_20_crypto.csv`
+- `components/top_30_forex.csv`
+
+No extra spreadsheet download is required after clone.
+
+## User Manual
+
+See `USER_MANUAL.md` for a step-by-step guide you can share with testers.
+
+## Hosted Deployment Checklist
+
+For hosted testing, share this minimal checklist with testers:
+
+1. In Supabase Dashboard, disable email confirmation:
+   - Authentication -> Providers -> Email -> **Confirm email = OFF**
+2. Add frontend URLs to redirect allow list:
+   - Authentication -> URL Configuration -> **Redirect URLs**
+3. Set hosted `.env` values:
+   - `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GEMINI_API_KEY`, `VITE_WATCHLIST_API_URL`
+4. Seed admin user:
+
+```bash
+SUPABASE_URL="https://<your-project-ref>.supabase.co" \
+SUPABASE_SERVICE_ROLE_KEY="<your-service-role-key>" \
+ADMIN_EMAIL="admin@bts.com" \
+ADMIN_PASSWORD='abCD123!@#' \
+node scripts/set-admin-user.mjs
 ```

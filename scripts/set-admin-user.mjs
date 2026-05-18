@@ -2,24 +2,70 @@
 /**
  * Create or update the master admin auth user in Supabase.
  *
- * Usage:
- *   SUPABASE_URL=https://YOUR_PROJECT.supabase.co \
- *   SUPABASE_SERVICE_ROLE_KEY=your_service_role_key \
- *   node scripts/set-admin-user.mjs
+ * Loads `.env` and `.env.local` (same as other scripts). Use values from your project:
+ *   SUPABASE_SERVICE_ROLE_KEY, VITE_SUPABASE_URL, VITE_MASTER_ADMIN_EMAIL, VITE_AUTH_UNIVERSAL_PASSWORD
+ *
+ *   npm run auth:sync-admin
+ *
+ * Or pass env once:
+ *   SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… ADMIN_EMAIL=… ADMIN_PASSWORD=… node scripts/set-admin-user.mjs
  */
 
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
 
-const ADMIN_EMAIL = 'admin@bts.com';
-const ADMIN_PASSWORD = '123abc';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(__dirname, '..');
 
-const url = process.env.SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function parseEnvFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    for (let line of raw.split('\n')) {
+      line = line.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eq = line.indexOf('=');
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq).trim();
+      let val = line.slice(eq + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (!(key in process.env)) process.env[key] = val;
+    }
+  } catch {
+    /* skip */
+  }
+}
+
+parseEnvFile(path.join(root, '.env'));
+parseEnvFile(path.join(root, '.env.local'));
+
+const ADMIN_EMAIL = String(
+  process.env.ADMIN_EMAIL || process.env.VITE_MASTER_ADMIN_EMAIL || 'idris.elfeghi@byanai.com'
+)
+  .trim()
+  .toLowerCase();
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || process.env.VITE_AUTH_UNIVERSAL_PASSWORD || '')
+  .trim();
+
+const url = String(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim();
 
 if (!url || !serviceRoleKey) {
-  console.error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY first.');
+  console.error('Missing SUPABASE_SERVICE_ROLE_KEY (and URL).');
+  console.error('In Supabase → Project Settings → API, copy the secret service_role JWT.');
+  console.error('Add to .env: SUPABASE_SERVICE_ROLE_KEY=eyJ...   then run: npm run auth:sync-admin');
   process.exit(1);
 }
+
+if (!ADMIN_PASSWORD) {
+  console.error('Set VITE_AUTH_UNIVERSAL_PASSWORD (or ADMIN_PASSWORD) in .env to the password you want for this user.');
+  process.exit(1);
+}
+
+const passwordToUse = ADMIN_PASSWORD;
 
 const supabase = createClient(url, serviceRoleKey, { auth: { persistSession: false } });
 
@@ -35,7 +81,7 @@ async function main() {
   if (existing) {
     const { error: updateError } = await supabase.auth.admin.updateUserById(existing.id, {
       email: ADMIN_EMAIL,
-      password: ADMIN_PASSWORD,
+      password: passwordToUse,
       email_confirm: true,
       user_metadata: { full_name: 'admin' },
     });
@@ -47,7 +93,7 @@ async function main() {
   } else {
     const { data: created, error: createError } = await supabase.auth.admin.createUser({
       email: ADMIN_EMAIL,
-      password: ADMIN_PASSWORD,
+      password: passwordToUse,
       email_confirm: true,
       user_metadata: { full_name: 'admin' },
     });
@@ -62,6 +108,7 @@ async function main() {
   const { data: listedAfter } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
   const adminUser = (listedAfter?.users || []).find((u) => (u.email || '').trim().toLowerCase() === ADMIN_EMAIL);
   if (adminUser?.id) {
+    // Omit updated_at: some projects have older `profiles` without that column (see supabase-profiles-table.sql for full shape).
     const { error: profileErr } = await supabase
       .from('profiles')
       .upsert(
@@ -72,7 +119,6 @@ async function main() {
           status: 'active',
           role: 'admin',
           is_verified: true,
-          updated_at: new Date().toISOString(),
         },
         { onConflict: 'uid' },
       );

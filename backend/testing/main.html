@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HappyPaws Joint Support - Keep Your Best Friend Bouncy!</title>
+    
+    <style>
+        /* Basic Reset and Styling */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f7f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* Header/Hero Section */
+        header {
+            background-color: #2c3e50; /* Dark blue - Trustworthy */
+            color: white;
+            padding: 60px 0;
+            text-align: center;
+            background-image: linear-gradient(rgba(44, 62, 80, 0.9), rgba(44, 62, 80, 0.9)), url('dog_placeholder.jpg'); /* Placeholder for a happy dog image */
+            background-size: cover;
+            background-position: center;
+        }
+        header h1 {
+            font-size: 3.5em;
+            margin-bottom: 10px;
+            color: #ecf0f1;
+        }
+        header p {
+            font-size: 1.5em;
+            margin-bottom: 30px;
+            color: #bdc3c7;
+        }
+        
+        /* Call to Action Button Styling */
+        .cta-button {
+            display: inline-block;
+            background-color: #e74c3c; /* Bright red/orange - High contrast */
+            color: white;
+            padding: 15px 40px;
+            text-decoration: none;
+            font-size: 1.5em;
+            font-weight: bold;
+            border-radius: 8px;
+            transition: background-color 0.3s ease;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+        }
+        .cta-button:hover {
+            background-color: #c0392b;
+            transform: translateY(-2px);
+        }
+
+        /* General Section Styling */
+        section {
+            padding: 60px 0;
+            text-align: center;
+        }
+        .bg-light {
+            background-color: #ffffff;
+        }
+        .bg-accent {
+            background-color: #eaf7f2; /* Light green - Natural feel */
+        }
+
+        /* Features/Benefits Grid */
+        .features-grid {
+            display: flex;
+            justify-content: space-between;
+            gap: 30px;
+            margin-top: 40px;
+            flex-wrap: wrap;
+        }
+        .feature-box {
+            flex: 1;
+            min-width: 280px;
+            padding: 20px;
+            border-left: 3px solid #2ecc71;
+            text-align: left;
+            background-color: #fff;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+        }
+        
+        /* Ingredients/Trust Section */
+        .ingredients-list {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 30px;
+            flex-wrap: wrap;
+        }
+        .ingredient-pill {
+            background-color: #2ecc71;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 50px;
+            font-weight: bold;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Testimonials */
+        .testimonial {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 10px;
+            margin: 20px auto;
+            max-width: 600px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+            text-align: left;
+            position: relative;
+        }
+        .testimonial::before {
+            content: "❝";
+            font-size: 4em;
+            color: #ccc;
+            display: block;
+            margin-bottom: -20px;
+            transform: translateY(10px);
+            position: relative;
+            left: -10px;
+        }
+
+        /* Footer */
+        footer {
+            background-color: #333;
+            color: white;
+            padding: 30px 0;
+            text-align: center;
+            font-size: 0.9em;
+        }
+
+        /* Media Queries for Responsiveness */
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 2.5em;
+            }
+            header p {
+                font-size: 1.2em;
+            }
+            .features-grid, .ingredients-list {
+                flex-direction: column;
+                gap: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 1. HERO SECTION (The Hook) -->
+    <header>
+        <div class="container">
+            <h1>🐕 Keep Your Best Friend Happy, Active, and Bouncy!</h1>
+            <p>The All-Natural Joint Support Supplement Dogs Need to Thrive.</p>
+            
+            <!-- PRIMARY CTA -->
+            <a href="#pricing" class="cta-button">🐶 YES! Keep My Dog Moving Today!</a>
+        </div>
+    </header>
+
+    <!-- 2. PROBLEM/PAIN POINT SECTION -->
+    <section class="bg-light">
+        <div class="container">
+            <h2>Is your dog losing their old zoomies?</h2>
+            <p style="font-size: 1.1em; max-width: 700px; margin: 20px auto;">
+                Do you notice stiffness on the stairs? Are long walks becoming a struggle? Growing older means joints need extra love and care. Don't let age or discomfort limit the joy of playing together.
+            </p>
+            <p style="font-weight: bold; color: #e74c3c;">
+                Give them the support they deserve.
+            </p>
+        </div>
+    </section>
+    
+    <!-- 3. SOLUTION/BENEFITS SECTION -->
+    <section class="bg-accent">
+        <div class="container">
+            <h2>Introducing HappyPaws Joint Support!</h2>
+            <p style="font-size: 1.2em; margin-bottom: 40px;">
+                Our veterinarian-formulated blend uses natural, powerful ingredients to support healthy cartilage, reduce discomfort, and help maintain mobility.
+            </p>
+
+            <div class="features-grid">
+                <div class="feature-box">
+                    <h3>🦴 Joint Comfort</h3>
+                    <p>Glucosamine and Chondroitin work together to rebuild and protect cartilage, easing stiffness and discomfort in knees and hips.</p>
+                </div>
+                <div class="feature-box">
+                    <h3>💖 Improved Mobility</h3>
+                    <p>Supports healthy muscle and ligament strength, encouraging more bounding, jumping, and playtime, no matter their age.</p>
+                </div>
+                <div class="feature-box">
+                    <h3>✨ All-Natural & Safe</h3>
+                    <p>Free from synthetic fillers, artificial colors, and harsh chemicals. Gentle enough for even the most sensitive tummies.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 4. INGREDIENTS/TRUST SECTION -->
+    <section class="bg-light" id="ingredients">
+        <div class="container">
+            <h2>What's Inside the Magic?</h2>
+            <p>We only use the best, vet-approved ingredients nature provides.</p>
+            
+            <div class="ingredients-list">
+                <div class="ingredient-pill">🌱 Glucosamine</div>
+                <div class="ingredient-pill">🦴 Chondroitin</div>
+                <div class="ingredient-pill">🐟 Omega-3 Fatty Acids</div>
+                <div class="ingredient-pill">🌿 MSM (Sulfur)</div>
+            </div>
+            
+            <p style="margin-top: 30px;">✅ 100% Vet Recommended | ✅ No Artificial Anything | ✅ Delicious Taste</p>
+        </div>
+    </section>
+    
+    <!-- 5. TESTIMONIAL SECTION (Social Proof) -->
+    <section class="bg-accent">
+        <div class="container">
+            <h2>⭐ Happy Owners Love HappyPaws!</h2>
+            
+            <div class="testimonial">
+                <p>Before HappyPaws, Buster was hesitant to run after squirrels. After just three weeks, his legs seem stronger and he's got his old puppy bounce back! I am so relieved. Thank you!</p>
+                <p style="margin-top: 15px; font-weight: bold;">— Sarah K., Owner of Buster (Golden Retriever)</p>
+            </div>
+            
+             <div class="testimonial">
+                <p>We have a senior Labrador, Daisy, and mobility was a huge concern. The supplements made a noticeable difference in her overall comfort level. Highly recommend this for any pet!</p>
+                <p style="margin-top: 15px; font-weight: bold;">— Mark D., Owner of Daisy (Labrador)</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- 6. PRICING AND FINAL CTA SECTION -->
+    <section id="pricing">
+        <div class="container">
+            <h2>Time to Give Them the Gift of Mobility!</h2>
+            <p style="font-size: 1.3em; margin-bottom: 40px;">Choose the plan that works best for your best friend.</p>
+
+            <div style="display: flex; justify-content: center; gap: 40px; flex-wrap: wrap; max-width: 800px; margin: 0 auto;">
+                
+                <!-- Option 1: Single Bottle -->
+                <div style="border: 2px solid #ccc; padding: 20px; border-radius: 10px; flex: 1; min-width: 250px; max-width: 300px;">
+                    <h3>One Bottle</h3>
+                    <p style="font-size: 2.5em; color: #e74c3c; margin: 10px 0;">$39.99</p>
+                    <p>30-Day Supply</p>
+                    <button class="cta-button" style="background-color: #95a5a6; width: 100%; margin-top: 20px;">Add to Cart</button>
+                </div>
+                
+                <!-- Option 2: Best Value (Highlighted) -->
+                <div style="border: 3px solid #2ecc71; padding: 30px; border-radius: 10px; box-shadow: 0 8px 20px rgba(46, 204, 113, 0.4); flex: 1; min-width: 280px; max-width: 320px;">
+                    <h3 style="color: #2ecc71;">⭐️ Best Value! 3 Bottles</h3>
+                    <p style="font-size: 2.5em; color: #2ecc71; margin: 10px 0;">$99.99<span style="text-decoration: line-through; color: #999; font-size: 0.6em;">($130.00)</span></p>
+                    <p style="font-weight: bold;">(Save 30%)</p>
+                    <button class="cta-button" style="background-color: #e74c3c; width: 100%; margin-top: 20px;">🐶 SAVE & ORDER NOW!</button>
+                </div>
+            </div>
+            
+            <p style="margin-top: 40px; font-size: 1.1em; color: #2ecc71;">⭐ 60-Day Money-Back Guarantee | Free Shipping on All Orders!</p>
+
+        </div>
+    </section>
+
+    <!-- 7. FOOTER -->
+    <footer>
+        <div class="container">
+            <p>&copy; 2024 HappyPaws Supplements. All rights reserved. | Disclaimer: These statements have not been evaluated by the FDA. Product is intended for maintenance and support, not treatment of any diagnosed condition.</p>
+        </div>
+    </footer>
+
+</body>
+</html>

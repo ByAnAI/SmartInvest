@@ -26,10 +26,13 @@ create policy "Users can read own profile"
   on public.profiles for select
   using (auth.uid() = uid);
 
--- 4) Admins can read ALL profiles (so the admin panel user list works)
+-- 4) Admins can read ALL profiles (delegated admins via role or master JWT email)
 create policy "Admins can read all profiles"
   on public.profiles for select
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
+  using (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  );
 
 -- 5) Allow insert so new sign-ups can create their profile (app does this in initializeUser)
 create policy "Users can insert own profile"
@@ -44,13 +47,19 @@ create policy "Users can update own profile"
 
 create policy "Admins can update any profile"
   on public.profiles for update
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com')
+  using (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  )
   with check (true);
 
 -- 7) Admins can delete any profile (for "remove user" in admin panel)
 create policy "Admins can delete any profile"
   on public.profiles for delete
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
+  using (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  );
 
 -- 8) Optional: trigger to create a profile when a new user signs up (so they appear in the list immediately)
 create or replace function public.handle_new_user()
@@ -86,7 +95,10 @@ security definer
 set search_path = public
 as $$
 begin
-  if not exists (select 1 from public.profiles where uid = auth.uid() and role = 'admin') then
+  if not (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  ) then
     return;
   end if;
   return query select * from public.profiles;

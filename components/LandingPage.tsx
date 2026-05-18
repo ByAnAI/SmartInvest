@@ -60,9 +60,9 @@ const LandingPage: React.FC<LandingPageProps> = ({ onAuth }) => {
             <p className="text-slate-500 text-sm">Deep learning models analyze thousands of data points in seconds.</p>
           </div>
           <div className="text-left space-y-2">
-            <div className="text-emerald-400 text-2xl">🌍</div>
-            <h3 className="text-white font-bold">Market Grounding</h3>
-            <p className="text-slate-500 text-sm">Real-time news integration using advanced Google Search tools.</p>
+            <div className="text-emerald-400 text-2xl">💹</div>
+            <h3 className="text-white font-bold">Trading Platform</h3>
+            <p className="text-slate-500 text-sm">Connect execution, orders, and venue routing in one workflow.</p>
           </div>
           <div className="text-left space-y-2">
             <div className="text-amber-400 text-2xl">🛡️</div>

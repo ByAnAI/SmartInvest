@@ -32,17 +32,23 @@ create policy "Authenticated can read daily watchlist"
   to authenticated
   using (true);
 
--- 6) Only admins can insert
+-- 6) Only admins can insert (matches App.tsx: master email OR profiles.role = admin)
 create policy "Admins can insert daily watchlist"
   on public.daily_watchlist for insert
   to authenticated
-  with check (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
+  with check (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  );
 
 -- 7) Only admins can update
 create policy "Admins can update daily watchlist"
   on public.daily_watchlist for update
   to authenticated
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com')
+  using (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  )
   with check (true);
 
 -- 8) Snapshot rows for fast read in AI Analysis (saved data, no live fetch needed)
@@ -180,15 +186,24 @@ create policy "Authenticated can read daily watchlist items"
 create policy "Admins can insert daily watchlist items"
   on public.daily_watchlist_items for insert
   to authenticated
-  with check (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
+  with check (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  );
 
 create policy "Admins can update daily watchlist items"
   on public.daily_watchlist_items for update
   to authenticated
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com')
+  using (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  )
   with check (true);
 
 create policy "Admins can delete daily watchlist items"
   on public.daily_watchlist_items for delete
   to authenticated
-  using (coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com');
+  using (
+    exists (select 1 from public.profiles p where p.uid = auth.uid() and p.role = 'admin')
+    or coalesce(lower(auth.jwt() ->> 'email'), '') = 'admin@bts.com'
+  );

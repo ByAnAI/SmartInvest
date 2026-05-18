@@ -11,15 +11,14 @@ source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
-## CSV path
+## CSV paths
 
-The SP500 list is read from a CSV with columns: `Ticker`, `Company`, `Sector`, `Location`, `Industry`, `Website`.
+**`GET /api/lists/sp500`** loads tickers from **`backend/data/sp500.csv`** by default.
 
-- Default path: `backend/data/company_fundamentals.csv`
-- Override: set env `CSV_PATH` to your file, e.g.  
-  `export CSV_PATH=/home/idris/Desktop/signaling_system/data/company_fundamentals.csv`
+- Override: env **`SP500_INSTRUMENT_CSV`** (path relative to `backend/` or absolute).
+- **`GET /api/lists/sp500/meta`** returns `{"path": "...", "count": N}` — quick check without downloading the full JSON array.
 
-Copy or symlink your CSV to `backend/data/`, or run with `CSV_PATH` set.
+**`load_tickers()`** without a path still defaults to `backend/data/company_fundamentals.csv` for other uses; env **`CSV_PATH`** overrides that default.
 
 ## Run
 
@@ -31,7 +30,7 @@ API base URL: `http://localhost:8000`
 
 ## Endpoints
 
-- `GET /api/lists/sp500?limit=100` – company list (tickers + metadata), optional limit for short list
+- `GET /api/lists/sp500` – full company list from the S&P CSV; optional `?limit=N` (1–5000) for a shorter prefix
 - `GET /api/financials/{ticker}` – current Yahoo Finance summary for one ticker
 - `POST /api/financials/batch` – body `{"tickers": ["AAPL", "MSFT"]}`, returns current data for each (max 100)
 - `GET /api/health` – health check

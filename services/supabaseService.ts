@@ -1,18 +1,53 @@
 import { supabase } from './supabase';
-import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset, DailyWatchlist, DailyWatchlistItem, CompanyFundamental } from "../types";
+import { useLocalTable } from './dataStorageMode';
+import {
+    localCfDelete,
+    localCfGetAll,
+    localCfGetMany,
+    localCfUpsertMany,
+    localCfUpdate as localCfUpdateRow,
+    localMarketGetAll,
+    localMarketUpsertRows,
+} from './localReferenceDb';
+import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset, DailyWatchlist, DailyWatchlistItem, CompanyFundamental, NewsBoardPost } from "../types";
+import { formatWatchlistCreatedAt } from "../utils/watchlistDisplay";
+import { MASTER_ADMIN_EMAIL } from '../config/masterAdmin';
+
+/** Keeps DB role in sync for the master account so RLS policies that use profiles.role allow writes. */
+async function syncMasterAdminProfile(uid: string, emailHint?: string | null): Promise<void> {
+    let email = (emailHint ?? '').trim().toLowerCase();
+    if (!email) {
+        const { data: { user } } = await supabase.auth.getUser();
+        email = (user?.email ?? '').trim().toLowerCase();
+    }
+    if (email !== MASTER_ADMIN_EMAIL) return;
+    const { error } = await supabase.from('profiles').update({ role: 'admin', status: 'active' }).eq('uid', uid);
+    if (error) console.warn('[SmartInvest] syncMasterAdminProfile:', error.message);
+}
 
 // --- USER MANAGEMENT ---
 
 export const initializeUser = async (uid: string, email?: string | null, displayName?: string | null) => {
-    const MASTER_ADMIN_EMAIL = "admin@bts.com";
     const emailNormalized = (email || '').trim().toLowerCase();
 
+    /** RLS admin checks use profiles.role; always heal master row after profile load/insert. */
+    const finalize = async (meta: UserMetadata): Promise<UserMetadata> => {
+        if (emailNormalized === MASTER_ADMIN_EMAIL) {
+            await syncMasterAdminProfile(uid, emailNormalized);
+        }
+        return meta;
+    };
+
     // Try to fetch user from 'profiles' table (renamed from 'users' to avoid confusion with internal auth)
-    const { data } = await supabase
+    const { data, error: selectErr } = await supabase
         .from('profiles')
         .select('*')
         .eq('uid', uid)
-        .single();
+        .maybeSingle();
+
+    if (selectErr) {
+        console.warn('[SmartInvest] profiles lookup:', selectErr.message);
+    }
 
     if (data) {
         // Keep the master account admin even if profile role was changed accidentally.
@@ -22,10 +57,10 @@ export const initializeUser = async (uid: string, email?: string | null, display
                 .update({ role: 'admin', status: 'active' })
                 .eq('uid', uid);
             if (!promoteError) {
-                return { ...data, role: 'admin', status: 'active' } as UserMetadata;
+                return finalize({ ...data, role: 'admin', status: 'active' } as UserMetadata);
             }
         }
-        return data as UserMetadata;
+        return finalize(data as UserMetadata);
     }
 
     // Auto-promote specific email to admin
@@ -35,8 +70,25 @@ export const initializeUser = async (uid: string, email?: string | null, display
         .from('profiles')
         .insert({ uid, email: emailNormalized, status: 'active', role });
 
-    if (insertError) throw insertError;
-    return { uid, email: emailNormalized, displayName: displayName || 'Investor', status: 'active' as const, role, isVerified: false, lastLogin: '', createdAt: '', updatedAt: '' };
+    if (insertError) {
+        /** Concurrent sign-in / retry can race another insert — row exists but first read missed it. */
+        if (insertError.code === '23505') {
+            const { data: retry } = await supabase.from('profiles').select('*').eq('uid', uid).maybeSingle();
+            if (retry) return finalize(retry as UserMetadata);
+        }
+        throw insertError;
+    }
+    return finalize({
+        uid,
+        email: emailNormalized,
+        displayName: displayName || 'Investor',
+        status: 'active' as const,
+        role,
+        isVerified: false,
+        lastLogin: '',
+        createdAt: '',
+        updatedAt: '',
+    });
 };
 
 export const markUserAsVerified = async (uid: string) => {
@@ -53,6 +105,23 @@ export const getUserMetadata = async (uid: string): Promise<UserMetadata | null>
         .single();
     return data as UserMetadata || null;
 };
+
+/** Clearer UX when Postgres RLS blocks RPC or table reads. */
+function throwIfRlsShowAdminHint(err: { message?: string; code?: string } | null | undefined): never {
+    if (!err) throw new Error('getAllUsers failed');
+    const msg = err.message || '';
+    const low = msg.toLowerCase();
+    const code = String((err as { code?: string }).code ?? '');
+    if (
+        /row-level security|violates .*policy|permission denied|42501|pgrst301|insufficient_privilege/i.test(low) ||
+        code === '42501'
+    ) {
+        throw new Error(
+            'Admin panel blocked by database security (RLS). In Supabase → SQL Editor, run supabase/migrations/20260428200000_admin_policies_role_only.sql from this repo, then set public.profiles.role = \'admin\' for your user.'
+        );
+    }
+    throw new Error(msg || 'getAllUsers failed');
+}
 
 function rowToUserMetadata(row: any): UserMetadata {
     return {
@@ -82,12 +151,12 @@ export const getAllUsers = async (): Promise<UserMetadata[]> => {
         const { data: tableData, error: tableError } = await supabase.from('profiles').select('*');
         if (tableError) {
             console.error('getAllUsers:', tableError);
-            throw tableError;
+            throwIfRlsShowAdminHint(tableError);
         }
         return (tableData || []).map(rowToUserMetadata);
     }
     console.error('getAllUsers:', error);
-    throw error;
+    throwIfRlsShowAdminHint(error);
 };
 
 export const updateUserStatus = async (uid: string, status: 'active' | 'disabled') => {
@@ -129,6 +198,26 @@ export const deleteUserFully = async (uid: string): Promise<{ success: true; per
 
 // --- PORTFOLIO MANAGEMENT ---
 
+/** Normalize DB timestamp for `opened_at` — PostgREST usually returns ISO strings; tolerate numbers / camelCase keys. */
+function portfolioRowOpenedAtIso(row: Record<string, unknown>): string | undefined {
+    const raw = row.opened_at ?? row.openedAt;
+    if (raw == null) return undefined;
+    if (typeof raw === 'string') {
+        const s = raw.trim();
+        if (!s) return undefined;
+        const t = new Date(s).getTime();
+        return Number.isNaN(t) ? undefined : new Date(t).toISOString();
+    }
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+        const d = new Date(raw);
+        return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+    }
+    if (typeof raw === 'object' && raw instanceof Date && !Number.isNaN(raw.getTime())) {
+        return raw.toISOString();
+    }
+    return undefined;
+}
+
 export const getPortfolio = async (uid: string): Promise<PortfolioItem[]> => {
     const { data, error } = await supabase
         .from('portfolios')
@@ -140,19 +229,61 @@ export const getPortfolio = async (uid: string): Promise<PortfolioItem[]> => {
         symbol: r.symbol,
         shares: Number(r.shares),
         avgCost: Number(r.avgCost ?? r.avg_cost ?? 0),
+        openedAt: portfolioRowOpenedAtIso(r as Record<string, unknown>),
+        firstBuyPrice:
+            r.first_buy_price != null && r.first_buy_price !== ''
+                ? Number(r.first_buy_price)
+                : undefined,
     }));
 };
 
 export const addStock = async (uid: string, item: PortfolioItem) => {
-    const { error } = await supabase
+    const sym = String(item.symbol).toUpperCase().trim();
+    const { data: existing, error: selErr } = await supabase
         .from('portfolios')
-        .upsert({
-            user_id: uid,
-            symbol: item.symbol,
-            shares: item.shares,
-            avg_cost: item.avgCost
-        }, { onConflict: 'user_id, symbol' });
+        .select('first_buy_price')
+        .eq('user_id', uid)
+        .eq('symbol', sym)
+        .maybeSingle();
+    if (selErr && selErr.code !== 'PGRST116') throw selErr;
+
+    const ex = existing as { first_buy_price?: number | string | null } | null;
+
+    /** Every buy (add/upsert) records the current moment in UTC. */
+    const openedAt = new Date().toISOString();
+
+    /** Frozen at first purchase; later adds only change avg_cost / shares. */
+    let firstBuyPrice: number;
+    if (ex?.first_buy_price != null && ex.first_buy_price !== '') {
+        firstBuyPrice = Number(ex.first_buy_price);
+    } else if (ex) {
+        firstBuyPrice =
+            item.firstBuyPrice != null && Number.isFinite(item.firstBuyPrice)
+                ? item.firstBuyPrice
+                : item.avgCost;
+    } else {
+        firstBuyPrice =
+            item.firstBuyPrice != null && Number.isFinite(item.firstBuyPrice)
+                ? item.firstBuyPrice
+                : item.avgCost;
+    }
+
+    const row = {
+        user_id: uid,
+        symbol: sym,
+        shares: item.shares,
+        avg_cost: item.avgCost,
+        opened_at: openedAt,
+        first_buy_price: firstBuyPrice,
+    };
+    const { error } = await supabase.from('portfolios').upsert(row, { onConflict: 'user_id,symbol' });
     if (error) throw error;
+    /** Ensure `opened_at` is persisted — some PostgREST upsert paths omit non-PK columns on conflict updates. */
+    await supabase
+        .from('portfolios')
+        .update({ opened_at: openedAt })
+        .eq('user_id', uid)
+        .eq('symbol', sym);
 };
 
 export const removeStock = async (uid: string, symbol: string) => {
@@ -256,26 +387,33 @@ export const addNote = async (uid: string, title: string, content: string) => {
 // --- MARKET DATA MANAGEMENT ---
 
 export const batchUploadMarketData = async (market: string, assets: { symbol: string; name: string }[]) => {
-    const collectionName = `market_data`; // Using a single table with a 'market' column is better in SQL
-
-    const payload = assets.map(asset => ({
+    const payload = assets.map((asset) => ({
         symbol: asset.symbol,
         name: asset.name,
         market: market.toLowerCase(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
     }));
 
-    const { error } = await supabase
-        .from(collectionName)
-        .upsert(payload, { onConflict: 'symbol' });
+    if (useLocalTable('market_data')) {
+        await localMarketUpsertRows(payload);
+        return;
+    }
 
+    const { error } = await supabase.from('market_data').upsert(payload, { onConflict: 'symbol' });
     if (error) throw error;
 };
 
 export const getAllMarketAssets = async (): Promise<MarketAsset[]> => {
-    const { data, error } = await supabase
-        .from('market_data')
-        .select('*');
+    if (useLocalTable('market_data')) {
+        try {
+            return await localMarketGetAll();
+        } catch (e) {
+            console.warn('local market_data read failed', e);
+            return [];
+        }
+    }
+
+    const { data, error } = await supabase.from('market_data').select('*');
 
     if (error) {
         console.warn("Could not fetch market_data", error);
@@ -287,15 +425,28 @@ export const getAllMarketAssets = async (): Promise<MarketAsset[]> => {
 
 // --- DAILY WATCHLIST (manager-created; all users can view) ---
 
-const todayDateString = () => new Date().toISOString().slice(0, 10);
+/** YYYY-MM-DD in the user's local calendar (avoid labelling "yesterday" when UTC date rolled over). */
+export function localCalendarDateStamp(d: Date = new Date()): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
 
+const todayDateString = () => localCalendarDateStamp();
+
+/** Human-readable line: publish date/time first, then local calendar day. Each save is a new DB row — old snapshots are kept. */
 export const buildWatchlistLabel = (watchlistDate: string, createdAt?: string): string => {
-    const datePart = watchlistDate || todayDateString();
-    const ts = createdAt ? new Date(createdAt) : new Date();
-    const hh = Number.isNaN(ts.getTime()) ? '00' : String(ts.getHours()).padStart(2, '0');
-    const mm = Number.isNaN(ts.getTime()) ? '00' : String(ts.getMinutes()).padStart(2, '0');
-    return `WatchList-of-${datePart}@${hh}:${mm}`;
+    const day = (watchlistDate || '').trim() || todayDateString();
+    const when = formatWatchlistCreatedAt(createdAt ?? new Date().toISOString());
+    return `${when} · calendar day ${day}`;
 };
+
+/** Normalize JSON/text[] `symbols` so UI always gets strings (avoids render quirks). */
+function normalizeDailyWatchlistSymbols(raw: unknown): string[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((s) => String(s ?? '').trim()).filter(Boolean);
+}
 
 export const getDailyWatchlist = async (): Promise<DailyWatchlist | null> => {
     const { data, error } = await supabase
@@ -311,20 +462,20 @@ export const getDailyWatchlist = async (): Promise<DailyWatchlist | null> => {
     }
     if (!data) return null;
     return {
-        id: data.id,
-        watchlist_date: data.watchlist_date,
-        symbols: Array.isArray(data.symbols) ? data.symbols : [],
-        created_by: data.created_by,
-        created_at: data.created_at,
+        id: String(data.id ?? ''),
+        watchlist_date: String(data.watchlist_date ?? ''),
+        symbols: normalizeDailyWatchlistSymbols(data.symbols),
+        created_by: data.created_by != null ? String(data.created_by) : '',
+        created_at: data.created_at != null ? String(data.created_at) : '',
         label: buildWatchlistLabel(data.watchlist_date, data.created_at),
     };
 };
 
 export const getAllDailyWatchlists = async (): Promise<DailyWatchlist[]> => {
+    /** Most recently published snapshot first (same as getDailyWatchlist single-row semantics). */
     const { data, error } = await supabase
         .from('daily_watchlist')
         .select('*')
-        .order('watchlist_date', { ascending: false })
         .order('created_at', { ascending: false });
 
     if (error) {
@@ -334,11 +485,11 @@ export const getAllDailyWatchlists = async (): Promise<DailyWatchlist[]> => {
 
     const rows = Array.isArray(data) ? data : [];
     return rows.map((r: any) => ({
-        id: r.id,
-        watchlist_date: r.watchlist_date,
-        symbols: Array.isArray(r.symbols) ? r.symbols : [],
-        created_by: r.created_by,
-        created_at: r.created_at,
+        id: String(r.id ?? ''),
+        watchlist_date: String(r.watchlist_date ?? ''),
+        symbols: normalizeDailyWatchlistSymbols(r.symbols),
+        created_by: r.created_by != null ? String(r.created_by) : '',
+        created_at: r.created_at != null ? String(r.created_at) : '',
         label: buildWatchlistLabel(r.watchlist_date, r.created_at),
     }));
 };
@@ -431,6 +582,21 @@ export const getDailyWatchlistItems = async (watchlistId: string, watchlistDate?
 export const getCompanyFundamentalsByTickers = async (tickers: string[]): Promise<Record<string, CompanyFundamental>> => {
     const normalized = tickers.map((t) => String(t).trim().toUpperCase()).filter(Boolean);
     if (normalized.length === 0) return {};
+
+    if (useLocalTable('company_fundamentals')) {
+        try {
+            const rows = await localCfGetMany(normalized);
+            const out: Record<string, CompanyFundamental> = {};
+            rows.forEach((r) => {
+                out[r.ticker] = r;
+            });
+            return out;
+        } catch (e) {
+            console.warn('Could not read local company_fundamentals', e);
+            return {};
+        }
+    }
+
     const { data, error } = await supabase
         .from('company_fundamentals')
         .select('ticker, company, sector, location, industry, website, updated_at')
@@ -454,15 +620,31 @@ export const getCompanyFundamentalsByTickers = async (tickers: string[]): Promis
     return out;
 };
 
+function throwWatchlistWriteError(scope: string, error: { message?: string; code?: string; details?: string; hint?: string }): never {
+    const raw = error.message || 'Unknown error';
+    const parts = [scope, raw, error.code, error.details, error.hint].filter(Boolean) as string[];
+    const msg = parts.join(' · ');
+    const low = msg.toLowerCase();
+    if (/row-level security|violates .*policy|permission denied for table/i.test(low)) {
+        throw new Error(
+            'Could not save watchlist (database blocked the insert). In Supabase → SQL Editor, run supabase/migrations/20260428200000_admin_policies_role_only.sql from this repo. Your row in public.profiles must have role = admin (sign out/in after fixing).'
+        );
+    }
+    throw new Error(msg);
+}
+
+/** Inserts a **new** snapshot row every time — never replaces prior lists. Items upsert only for this new row’s id. */
 export const createOrUpdateDailyWatchlist = async (
     createdByUid: string,
     symbols: string[],
     createdAtIso?: string,
     items?: DailyWatchlistItem[]
 ): Promise<void> => {
+    await syncMasterAdminProfile(createdByUid);
     const normalized = symbols.map(s => String(s).toUpperCase().trim()).filter(Boolean);
     const createdAt = createdAtIso ?? new Date().toISOString();
-    const watchlistDate = createdAt.slice(0, 10);
+    /** Local calendar column for filtering; distinct from exact `created_at` timestamp. */
+    const watchlistDate = localCalendarDateStamp();
     const { data: inserted, error } = await supabase
         .from('daily_watchlist')
         .insert({
@@ -474,7 +656,7 @@ export const createOrUpdateDailyWatchlist = async (
         .select('id, watchlist_date')
         .single();
 
-    if (error) throw new Error(error.message || 'Failed to save daily watchlist.');
+    if (error) throwWatchlistWriteError('daily_watchlist insert', error);
     if (!inserted?.id) throw new Error('Failed to get saved watchlist id.');
 
     if (Array.isArray(items)) {
@@ -535,10 +717,14 @@ export const createOrUpdateDailyWatchlist = async (
             .filter((r) => r.symbol);
 
         if (payload.length > 0) {
-            const { error: insErr } = await supabase
-                .from('daily_watchlist_items')
-                .upsert(payload, { onConflict: 'watchlist_id,symbol' });
-            if (insErr) throw new Error(insErr.message || 'Failed to save watchlist snapshot rows.');
+            const chunkSize = 150;
+            for (let i = 0; i < payload.length; i += chunkSize) {
+                const chunk = payload.slice(i, i + chunkSize);
+                const { error: insErr } = await supabase
+                    .from('daily_watchlist_items')
+                    .upsert(chunk, { onConflict: 'watchlist_id,symbol' });
+                if (insErr) throwWatchlistWriteError('daily_watchlist_items upsert', insErr);
+            }
         }
     }
 };
@@ -546,6 +732,25 @@ export const createOrUpdateDailyWatchlist = async (
 // --- COMPANY FUNDAMENTALS (reference data; admin-only write) ---
 
 export const getCompanyFundamentals = async (opts?: { limit?: number; offset?: number; search?: string }): Promise<CompanyFundamental[]> => {
+    if (useLocalTable('company_fundamentals')) {
+        let rows = await localCfGetAll();
+        const s = opts?.search?.trim();
+        if (s) {
+            const q = s.toLowerCase();
+            rows = rows.filter(
+                (r) =>
+                    r.ticker.toLowerCase().includes(q) ||
+                    r.company.toLowerCase().includes(q) ||
+                    r.sector.toLowerCase().includes(q) ||
+                    r.industry.toLowerCase().includes(q)
+            );
+        }
+        const offset = Math.max(0, opts?.offset ?? 0);
+        const lim = opts?.limit;
+        if (lim != null) return rows.slice(offset, offset + lim);
+        return rows.slice(offset);
+    }
+
     let q = supabase.from('company_fundamentals').select('ticker, company, sector, location, industry, website, updated_at').order('ticker');
     if (opts?.search?.trim()) {
         const s = opts.search.trim().replace(/"/g, '');
@@ -567,7 +772,13 @@ export const getCompanyFundamentals = async (opts?: { limit?: number; offset?: n
 };
 
 export const getCompanyFundamentalByTicker = async (ticker: string): Promise<CompanyFundamental | null> => {
-    const { data, error } = await supabase.from('company_fundamentals').select('*').eq('ticker', ticker.trim().toUpperCase()).single();
+    const t = ticker.trim().toUpperCase();
+    if (useLocalTable('company_fundamentals')) {
+        const rows = await localCfGetMany([t]);
+        return rows[0] ?? null;
+    }
+
+    const { data, error } = await supabase.from('company_fundamentals').select('*').eq('ticker', t).single();
     if (error || !data) return null;
     return {
         ticker: data.ticker,
@@ -590,22 +801,81 @@ export const upsertCompanyFundamentals = async (rows: CompanyFundamental[]): Pro
         website: (r.website ?? '').trim(),
     })).filter((r) => r.ticker);
     if (payload.length === 0) return;
+
+    if (useLocalTable('company_fundamentals')) {
+        await localCfUpsertMany(
+            payload.map((r) => ({
+                ticker: r.ticker,
+                company: r.company,
+                sector: r.sector,
+                location: r.location,
+                industry: r.industry,
+                website: r.website,
+            }))
+        );
+        return;
+    }
+
     const { error } = await supabase.from('company_fundamentals').upsert(payload, { onConflict: 'ticker' });
     if (error) throw error;
 };
 
 export const updateCompanyFundamental = async (ticker: string, updates: Partial<Omit<CompanyFundamental, 'ticker'>>): Promise<void> => {
+    const t = ticker.trim().toUpperCase();
+    if (useLocalTable('company_fundamentals')) {
+        await localCfUpdateRow(ticker, updates);
+        return;
+    }
+
     const body: Record<string, string> = {};
     if (updates.company !== undefined) body.company = updates.company.trim();
     if (updates.sector !== undefined) body.sector = updates.sector.trim();
     if (updates.location !== undefined) body.location = updates.location.trim();
     if (updates.industry !== undefined) body.industry = updates.industry.trim();
     if (updates.website !== undefined) body.website = updates.website.trim();
-    const { error } = await supabase.from('company_fundamentals').update(body).eq('ticker', ticker.trim().toUpperCase());
+    const { error } = await supabase.from('company_fundamentals').update(body).eq('ticker', t);
     if (error) throw error;
 };
 
 export const deleteCompanyFundamental = async (ticker: string): Promise<void> => {
+    if (useLocalTable('company_fundamentals')) {
+        await localCfDelete(ticker);
+        return;
+    }
+
     const { error } = await supabase.from('company_fundamentals').delete().eq('ticker', ticker.trim().toUpperCase());
+    if (error) throw error;
+};
+
+// --- NEWS BOARD (shared; all signed-in members + admins) ---
+
+export const getNewsBoardPosts = async (): Promise<NewsBoardPost[]> => {
+    const { data, error } = await supabase
+        .from('news_board_posts')
+        .select('*')
+        .order('created_at', { ascending: false });
+    if (error) throw error;
+    return (data || []) as NewsBoardPost[];
+};
+
+export const addNewsBoardPost = async (args: {
+    authorUid: string;
+    authorEmail: string;
+    authorDisplayName: string;
+    title: string;
+    body: string;
+}): Promise<void> => {
+    const { error } = await supabase.from('news_board_posts').insert({
+        title: args.title.trim(),
+        body: args.body.trim(),
+        author_uid: args.authorUid,
+        author_email: (args.authorEmail || '').trim().toLowerCase(),
+        author_display_name: args.authorDisplayName?.trim() || null,
+    });
+    if (error) throw error;
+};
+
+export const deleteNewsBoardPost = async (postId: string): Promise<void> => {
+    const { error } = await supabase.from('news_board_posts').delete().eq('id', postId);
     if (error) throw error;
 };

@@ -1,4 +1,6 @@
 """Load company list from CSV and fetch current data from Yahoo Finance."""
+from __future__ import annotations
+
 import math
 import os
 from typing import Any
@@ -27,8 +29,26 @@ def _default_csv_path() -> str:
 
 
 def _full_sp500_csv_path() -> str:
+    """Legacy: components/S&P500_instrument.csv (used when load_tickers falls back from fundamentals)."""
     base = os.path.dirname(os.path.abspath(__file__))
     return os.path.abspath(os.path.join(base, "..", "components", "S&P500_instrument.csv"))
+
+
+def _default_sp500_watchlist_csv_path() -> str:
+    """Primary file for `/api/lists/sp500`: backend/data/sp500.csv (committed in repo)."""
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(backend_dir, "data", "sp500.csv"))
+
+
+def sp500_instrument_csv_path() -> str:
+    """CSV for watchlists (`GET /api/lists/sp500`). Defaults to backend/data/sp500.csv. Override with SP500_INSTRUMENT_CSV."""
+    override = (os.environ.get("SP500_INSTRUMENT_CSV") or "").strip()
+    if override:
+        if os.path.isabs(override):
+            return override
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.abspath(os.path.join(backend_dir, override))
+    return _default_sp500_watchlist_csv_path()
 
 
 def load_tickers(csv_path: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
@@ -659,12 +679,20 @@ def fetch_financial_statements(ticker: str) -> dict[str, Any] | None:
 
 
 def fetch_financials_batch(tickers: list[str], period: str = "1y") -> list[dict[str, Any]]:
-    """Fetch summary for multiple tickers. Returns list of summaries (skips failures)."""
+    """Fetch summary for multiple tickers. Returns list of summaries (skips failures).
+
+    Set env WATCHLIST_API_GC_TICKER=1 to run gc.collect(0) after each ticker (slower; may trim peak RSS).
+    """
+    import gc
+
+    gc_each = os.environ.get("WATCHLIST_API_GC_TICKER", "").strip().lower() in ("1", "true", "yes")
     out = []
-    for t in tickers[:600]:  # allow full SP500-style runs
+    for t in tickers[:5000]:
         s = fetch_financial_summary(t, period=period)
         if s:
             out.append(s)
+        if gc_each:
+            gc.collect(0)
     return out
 
 
@@ -688,7 +716,7 @@ def fetch_returns_series(ticker: str, period: str = "1y") -> dict[str, Any] | No
 def fetch_returns_batch(tickers: list[str], period: str = "1y") -> list[dict[str, Any]]:
     """Fetch daily returns series for multiple tickers (max 600)."""
     out = []
-    for t in tickers[:600]:
+    for t in tickers[:5000]:
         s = fetch_returns_series(t, period=period)
         if s is not None:
             out.append(s)

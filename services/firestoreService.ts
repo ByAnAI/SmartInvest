@@ -18,6 +18,7 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { db, app } from "./firebase";
 import { PortfolioItem, UserMetadata, Folder, FileItem, Note, TeamMember, MarketAsset } from "../types";
+import { MASTER_ADMIN_EMAIL } from "../config/masterAdmin";
 
 // --- EXISTING MOCKS (Kept for compatibility with existing components if needed) ---
 
@@ -30,9 +31,7 @@ export const initializeUser = async (uid: string, email?: string | null, display
     return docSnap.data() as UserMetadata;
   }
 
-  // Auto-promote specific email to admin
-  const MASTER_ADMIN_EMAIL = "admin@bts.com";
-  const role = (email === MASTER_ADMIN_EMAIL) ? 'admin' : 'user';
+  const role = ((email || '').trim().toLowerCase() === MASTER_ADMIN_EMAIL) ? 'admin' : 'user';
 
   // Create new user if not exists
   const newUser: UserMetadata = {

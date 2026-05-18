@@ -1,4 +1,5 @@
 import React from 'react';
+import MacroIndicatorsPanel from './MacroIndicatorsPanel';
 
 const Dashboard: React.FC = () => {
   const today = new Date();
@@ -113,6 +114,8 @@ const Dashboard: React.FC = () => {
           <a href="#" className="text-blue-600 hover:underline">Start Free Trial</a>
         </div>
       </div>
+
+      <MacroIndicatorsPanel />
 
       {/* Main Market Indices */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

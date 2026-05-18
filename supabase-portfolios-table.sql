@@ -6,6 +6,8 @@ create table if not exists public.portfolios (
   symbol text not null,
   shares numeric not null default 1,
   avg_cost numeric not null default 0,
+  opened_at timestamptz default now(),
+  first_buy_price numeric,
   primary key (user_id, symbol)
 );
 
@@ -34,3 +36,7 @@ create policy "Users can delete own portfolio"
 
 -- Optional: support both column names (avg_cost in DB, app uses avgCost via mapping)
 comment on column public.portfolios.avg_cost is 'Average cost per share; app may send as avgCost';
+comment on column public.portfolios.opened_at is 'UTC time of last purchase; app sets on every buy. See supabase-portfolios-opened-at.sql for legacy DBs.';
+comment on column public.portfolios.first_buy_price is 'Per-share price at first purchase; see supabase-portfolios-first-buy-price.sql for existing DBs.';
+
+-- If the table already existed without opened_at / first_buy_price, run the matching migration SQL files once.
