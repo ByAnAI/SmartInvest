@@ -23,3 +23,22 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.env.local
+.env.*.local
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+backend/cache/
+*.egg-info/
+
+# Local / generated
+watchlist/
+backend/data/scratch/
+**/.~lock.*
+*.zip
+*.tar.gz
+
+# OS
+.DS_Store
