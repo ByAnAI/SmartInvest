@@ -39,6 +39,24 @@ def load_macro_report(report_date: str) -> dict[str, Any] | None:
     }
 
 
+def load_latest_macro_report() -> dict[str, Any] | None:
+    d = macro_reports_dir()
+    if not d.is_dir():
+        return None
+
+    latest_date: str | None = None
+    for path in d.glob("macro_report_*.txt"):
+        report_date = path.stem[len("macro_report_") :]
+        if not _DATE_RE.match(report_date):
+            continue
+        if latest_date is None or report_date > latest_date:
+            latest_date = report_date
+
+    if latest_date is None:
+        return None
+    return load_macro_report(latest_date)
+
+
 def save_macro_report(report_date: str, content: str) -> dict[str, Any]:
     if not _DATE_RE.match(report_date):
         raise ValueError(f"Invalid report_date {report_date!r}; use YYYY-MM-DD")

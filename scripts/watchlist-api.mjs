@@ -5,7 +5,7 @@
  * Forwards CSV-related keys from `.env` and `.env.local` into the Python process (Vite does not do that).
  * Usage: npm run watchlist-api
  */
-import { spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,12 @@ const venvUnix = path.join(backend, '.venv', 'bin', 'python');
 const venvWin = path.join(backend, '.venv', 'Scripts', 'python.exe');
 
 /** Keys read by backend/data_loader.py — pull from root .env so you don't need a separate shell export. */
+/** Leading digits only — .env must not contain shell commands on the same line as WATCHLIST_API_PORT=. */
+function parseWatchlistApiPort(raw) {
+  const m = String(raw ?? '').trim().match(/^(\d{2,5})/);
+  return m ? m[1] : '8000';
+}
+
 const BACKEND_ENV_KEYS = new Set([
   'SP500_INSTRUMENT_CSV',
   'CSV_PATH',
@@ -26,6 +32,10 @@ const BACKEND_ENV_KEYS = new Set([
   'WATCHLIST_SNAPSHOT_CSV_DISABLED',
   'WATCHLIST_API_PORT',
   'WATCHLIST_API_GC_TICKER',
+  'ALPHA_VANTAGE_API_KEY',
+  'ALPHA_VANTAGE_NEWS_MIN_INTERVAL',
+  'ALPHA_VANTAGE_NEWS_CACHE_TTL',
+  'ALPHA_VANTAGE_NEWS_MAX_SYMBOLS',
 ]);
 
 function parseBackendEnvFromDotEnv(dotEnvPath) {
@@ -50,6 +60,27 @@ function parseBackendEnvFromDotEnv(dotEnvPath) {
     out[key] = val;
   }
   return out;
+}
+
+function freePortIfBusy(port) {
+  try {
+    const pids = execSync(`lsof -ti :${port}`, { encoding: 'utf8' })
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (pids.length === 0) return;
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), 'SIGTERM');
+        console.info(`[SmartInvest] Port ${port} was in use — stopped PID ${pid} (stale Watchlist API).`);
+      } catch {
+        /* ignore */
+      }
+    }
+    execSync('sleep 0.5');
+  } catch {
+    /* nothing listening */
+  }
 }
 
 function printMissingVenv() {
@@ -77,10 +108,10 @@ function run(python) {
     ...parseBackendEnvFromDotEnv(path.join(root, '.env.local')),
   };
   const merged = { ...process.env, ...fromFile };
-  const port =
-    merged.WATCHLIST_API_PORT?.trim() ||
-    process.env.WATCHLIST_API_PORT?.trim() ||
-    '8000';
+  const port = parseWatchlistApiPort(
+    merged.WATCHLIST_API_PORT || process.env.WATCHLIST_API_PORT
+  );
+  freePortIfBusy(port);
   const reload =
     merged.WATCHLIST_API_RELOAD === '1' ||
     merged.WATCHLIST_API_RELOAD === 'true' ||

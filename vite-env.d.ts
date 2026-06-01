@@ -9,13 +9,21 @@ interface ImportMetaEnv {
    * Omit on localhost: app uses same-origin /hf-router (Vite proxy). Set on static production hosts if you do not proxy /hf-router.
    */
   readonly VITE_HF_BASE_URL?: string;
-  /** `hf` (default) | `ollama` — run models locally without Hugging Face Inference credits */
+  /** `hf` (default) | `ollama` | `gemini` — run models locally/alternate provider without Hugging Face Inference credits */
   readonly VITE_LLM_PROVIDER?: string;
+  /** `auto` (default) | `ollama` | `gemini` | `none` — fallback when Hugging Face router/network fails. */
+  readonly VITE_HF_NETWORK_FALLBACK_PROVIDER?: string;
+  readonly VITE_GEMINI_API_KEY?: string;
+  readonly GEMINI_API_KEY?: string;
   /** Ollama model id (after `ollama pull …`). Default: qwen2.5:7b */
   readonly VITE_OLLAMA_MODEL?: string;
+  /** GPU layers for Ollama (0 = CPU only, default). Also set OLLAMA_NUM_GPU=0 when starting `ollama serve`. */
+  readonly VITE_OLLAMA_NUM_GPU?: string;
   /** Override Ollama base URL; in `npm run dev` defaults to same-origin `/ollama` (Vite proxy). */
   readonly VITE_OLLAMA_BASE_URL?: string;
   readonly VITE_FINNHUB_KEY?: string;
+  /** `alphavantage` (default) avoids LLM/HF; `llm` uses Finnhub headlines + selected LLM provider. */
+  readonly VITE_SENTIMENT_SOURCE?: string;
   readonly VITE_FOREX_LOCAL_FIRST?: string;
   /** Master account email (admin bypass for suspension / role). Default: idris.elfeghi@byanai.com */
   readonly VITE_MASTER_ADMIN_EMAIL?: string;

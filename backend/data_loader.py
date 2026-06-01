@@ -23,6 +23,114 @@ def _clean_for_json(val: Any) -> Any:
     return val
 
 
+def _extract_company_leader(info: dict[str, Any]) -> tuple[str | None, str | None, Any, Any, int]:
+    """Best-effort CEO / top executive from Yahoo `companyOfficers`."""
+    officers = info.get("companyOfficers")
+    if not isinstance(officers, list):
+        return None, None, None, None, 0
+    preferred = (
+        "chief executive officer",
+        "ceo",
+        "president",
+        "chairman",
+    )
+    fallback: tuple[str | None, str | None, Any, Any] = (None, None, None, None)
+    officer_count = 0
+    for officer in officers:
+        if not isinstance(officer, dict):
+            continue
+        officer_count += 1
+        name = str(officer.get("name") or "").strip() or None
+        title = str(officer.get("title") or "").strip() or None
+        total_pay = _clean_for_json(_safe_float(officer.get("totalPay")))
+        year_born = _clean_for_json(_safe_float(officer.get("yearBorn")))
+        if not name:
+            continue
+        if fallback[0] is None:
+            fallback = (name, title, total_pay, year_born)
+        title_l = (title or "").lower()
+        if any(token in title_l for token in preferred):
+            return name, title, total_pay, year_born, officer_count
+    return fallback[0], fallback[1], fallback[2], fallback[3], officer_count
+
+
+def _extract_yahoo_news(stock: Any, limit: int = 10) -> list[dict[str, Any]]:
+    """Best-effort recent Yahoo Finance news rows from yfinance."""
+    try:
+        raw_news = getattr(stock, "news", None)
+        if callable(raw_news):
+            raw_news = raw_news()
+    except Exception:
+        raw_news = None
+    if not raw_news:
+        try:
+            getter = getattr(stock, "get_news", None)
+            raw_news = getter() if callable(getter) else []
+        except Exception:
+            raw_news = []
+    if not isinstance(raw_news, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in raw_news[: max(1, limit)]:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        title = str(item.get("title") or content.get("title") or "").strip()
+        if not title:
+            continue
+        provider_obj = content.get("provider") if isinstance(content.get("provider"), dict) else {}
+        click_obj = content.get("clickThroughUrl") if isinstance(content.get("clickThroughUrl"), dict) else {}
+        canonical_obj = content.get("canonicalUrl") if isinstance(content.get("canonicalUrl"), dict) else {}
+        link = str(item.get("link") or click_obj.get("url") or canonical_obj.get("url") or "").strip()
+        out.append(
+            {
+                "title": title,
+                "publisher": str(
+                    item.get("publisher") or provider_obj.get("displayName") or content.get("providerDisplayName") or ""
+                ).strip(),
+                "published": _clean_for_json(item.get("providerPublishTime") or content.get("pubDate")),
+                "link": link,
+            }
+        )
+    return out
+
+
+def _filter_management_news(news: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+    keywords = (
+        "ceo",
+        "cfo",
+        "chief",
+        "leader",
+        "leadership",
+        "management",
+        "manager",
+        "board",
+        "director",
+        "governance",
+        "succession",
+        "founder",
+        "executive",
+        "officer",
+        "strategy",
+        "strategic",
+        "appoint",
+        "appointed",
+        "resign",
+        "retire",
+        "compensation",
+        "activist",
+    )
+    rows: list[dict[str, Any]] = []
+    for item in news:
+        title = str(item.get("title") or "").lower()
+        if any(k in title for k in keywords):
+            rows.append(item)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def _default_csv_path() -> str:
     base = os.path.dirname(os.path.abspath(__file__))
     return os.environ.get("CSV_PATH", os.path.join(base, "data", "company_fundamentals.csv"))
@@ -234,6 +342,8 @@ def fetch_financial_summary(ticker: str, period: str = "1y") -> dict[str, Any] |
             current_price = float(hist["Close"].iloc[-1])
         if current_price is None and isinstance(info.get("currentPrice"), (int, float)):
             current_price = info["currentPrice"]
+        leader_name, leader_title, leader_total_pay, leader_year_born, officer_count = _extract_company_leader(info)
+        yahoo_news = _extract_yahoo_news(stock, limit=12)
 
         out: dict[str, Any] = {
             "ticker": ticker.upper(),
@@ -242,6 +352,34 @@ def fetch_financial_summary(ticker: str, period: str = "1y") -> dict[str, Any] |
             "short_name": info.get("shortName"),
             "sector": info.get("sector"),
             "industry": info.get("industry"),
+            "leader_name": leader_name,
+            "leader_title": leader_title,
+            "leader_total_pay": leader_total_pay,
+            "leader_year_born": leader_year_born,
+            "officer_count": officer_count,
+            "held_percent_insiders": _clean_for_json(_safe_float(info.get("heldPercentInsiders"))),
+            "held_percent_institutions": _clean_for_json(_safe_float(info.get("heldPercentInstitutions"))),
+            "audit_risk": _clean_for_json(_safe_float(info.get("auditRisk"))),
+            "board_risk": _clean_for_json(_safe_float(info.get("boardRisk"))),
+            "compensation_risk": _clean_for_json(_safe_float(info.get("compensationRisk"))),
+            "shareholder_rights_risk": _clean_for_json(_safe_float(info.get("shareHolderRightsRisk"))),
+            "overall_risk": _clean_for_json(_safe_float(info.get("overallRisk"))),
+            "yahoo_recent_news": yahoo_news,
+            "yahoo_management_news": _filter_management_news(yahoo_news),
+            "revenue_growth": _clean_for_json(_safe_float(info.get("revenueGrowth"))),
+            "earnings_growth": _clean_for_json(_safe_float(info.get("earningsGrowth"))),
+            "gross_margins": _clean_for_json(_safe_float(info.get("grossMargins"))),
+            "profit_margins": _clean_for_json(_safe_float(info.get("profitMargins"))),
+            "operating_margins": _clean_for_json(_safe_float(info.get("operatingMargins"))),
+            "ebitda_margins": _clean_for_json(_safe_float(info.get("ebitdaMargins"))),
+            "market_cap": _clean_for_json(_safe_float(info.get("marketCap"))),
+            "enterprise_value": _clean_for_json(_safe_float(info.get("enterpriseValue"))),
+            "shares_outstanding": _clean_for_json(_safe_float(info.get("sharesOutstanding"))),
+            "average_volume": _clean_for_json(
+                _safe_float(info.get("averageVolume")) or _safe_float(info.get("averageDailyVolume10Day"))
+            ),
+            "recommendation_mean": _clean_for_json(_safe_float(info.get("recommendationMean"))),
+            "target_mean_price": _clean_for_json(_safe_float(info.get("targetMeanPrice"))),
             "total_assets": None,
             "total_liabilities": None,
             "total_revenue": None,

@@ -1,0 +1,55 @@
+# US Macroeconomic Report
+# Report date: 2026-05-25
+# Saved at (UTC): 2026-05-25T09:09:35.606330+00:00
+# Source: macro_daily.csv snapshot
+
+### Executive Summary
+- **GDP** growth remains robust at 31,856.3, indicating a strong economic backdrop.
+- **Industrial Production** and **Retail Sales** are steady, suggesting ongoing consumer spending and industrial activity.
+- The **Unemployment Rate** at 4.30% and **Non-Farm Payrolls** of 158,736 indicate a tight labor market.
+- **CPI** and **PPI** show inflation cooling from recent peaks, but still elevated.
+- The **Yield Curve** is slightly inverted at 0.50%, raising concerns about potential recession risks.
+- **USD Index** is strong, indicating a global economic environment that favors the dollar.
+- **Fed Funds Rate** at 3.64% and **High Yield Credit Spread** at 2.83% suggest a tightening financial environment.
+- **Money Supply** and **Fed Balance Sheet** indicate a gradual reduction in monetary stimulus.
+
+- **Market Regime:** Risk-off with potential recessionary signals.
+
+### Growth Outlook
+- **GDP** growth remains strong at 31,856.3, indicating a resilient economy.
+- **Industrial Production** is stable at 102.4963, suggesting steady manufacturing activity.
+- **Retail Sales** are robust at 757,085, indicating healthy consumer spending.
+- **Growth Outlook:** Growth is steady but shows signs of deceleration, which could be bearish for equities if not sustained.
+
+### Labor Market Conditions
+- **Unemployment Rate** at 4.30% and **Non-Farm Payrolls** of 158,736 indicate a tight labor market.
+- **Jobless Claims** at 211,000 are relatively high, suggesting some labor market stress.
+- **Labor Participation Rate** at 61.80% is stable, indicating a balanced labor force.
+- **Labor Market Outlook:** Tight labor market could lead to wage pressures, affecting Fed policy expectations.
+
+### Inflation Trend
+- **CPI** at 332.407 and **PPI** at 283.764 show inflation cooling from recent peaks but remains elevated.
+- **Inflation Outlook:** Inflation is cooling, which could ease monetary tightening but still poses risks to equity valuations.
+
+### Interest Rates & Yield Curve
+- **Fed Funds Rate** at 3.64% and **10Y Treasury Yield** at 4.59% indicate a tightening monetary policy.
+- **2Y Treasury Yield** at 4.09% and the **Yield Curve** at 0.50% suggest potential recession risks.
+- **Interest Rate Outlook:** Tightening monetary policy could lead to a slowdown in economic activity and affect risk assets.
+
+### Market Liquidity & Financial Conditions
+- **USD Index** at 119.2825 is strong, indicating a global economic environment that favors the dollar.
+- **High Yield Credit Spread** at 2.83% suggests a tightening credit environment.
+- **Fed Balance Sheet** at 6,728,502 and **Money Supply** at 22,686 indicate a gradual reduction in monetary stimulus.
+- **Liquidity Outlook:** Financial conditions are tightening, which could impact risk assets.
+
+### Overall Market Impact
+- **Bullish/Bearish/Neutral:** Bearish
+- **Sector Implications:** 
+  - **Tech:** Vulnerable to interest rate hikes and economic slowdown.
+  - **Financials:** Beneficial from higher interest rates but exposed to economic downturn.
+  - **Energy:** Sensitive to inflation and demand.
+  - **Defensive Sectors:** Utilities and Consumer Staples may outperform.
+- **Risk Scenarios:** Recession risk and potential market correction.
+
+### Final Investment Takeaway
+Given the current macroeconomic environment, investors should adopt a cautious stance, focusing on defensive sectors and hedging against potential economic downturns. Reducing exposure to cyclical and high-risk assets, such as tech and energy, while maintaining positions in financials and defensive sectors is advisable. Monitoring the yield curve and labor market indicators closely for signs of economic stress is crucial.

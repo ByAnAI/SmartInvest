@@ -27,6 +27,7 @@ import type { FxChartResolutionId, OhlcBar } from '../services/forexCandles';
 import {
   FX_CHART_RESOLUTIONS,
   fetchCommodityDailyCandlesWithFallback,
+  fetchCryptoCandlesWithFallback,
   fetchForexCandlesWithFallback,
   fxChartRefreshIntervalMs,
 } from '../services/forexCandles';
@@ -39,9 +40,9 @@ type TradingPanel = 'sp500' | 'forex' | 'crypto' | 'commodities';
 
 const PANEL_NAV: { id: TradingPanel; label: string; hint: string; emoji: string }[] = [
   { id: 'sp500', label: 'S&P 500', hint: 'Team or your file', emoji: '📊' },
+  { id: 'commodities', label: 'Commodities', hint: 'Metals & oil', emoji: '🪙' },
   { id: 'forex', label: 'Forex', hint: 'Major pairs', emoji: '💱' },
   { id: 'crypto', label: 'Crypto', hint: 'Digital assets', emoji: '₿' },
-  { id: 'commodities', label: 'Commodities', hint: 'Metals & oil', emoji: '🪙' },
 ];
 
 const FX_FLAG: Record<string, string> = {
@@ -127,6 +128,13 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
   const [fxCandleSource, setFxCandleSource] = useState<'finnhub' | 'yahoo' | 'local' | 'none' | null>(null);
   const [fxCandleDetail, setFxCandleDetail] = useState<string | null>(null);
 
+  const [cryptoChartResolution, setCryptoChartResolution] = useState<FxChartResolutionId>('15');
+  const [cryptoCandles, setCryptoCandles] = useState<OhlcBar[]>([]);
+  const [cryptoCandleLoading, setCryptoCandleLoading] = useState(false);
+  const [cryptoCandleError, setCryptoCandleError] = useState<string | null>(null);
+  const [cryptoCandleSource, setCryptoCandleSource] = useState<'yahoo' | 'none' | null>(null);
+  const [cryptoCandleDetail, setCryptoCandleDetail] = useState<string | null>(null);
+
   const [commodityCandles, setCommodityCandles] = useState<OhlcBar[]>([]);
   const [commodityCandleLoading, setCommodityCandleLoading] = useState(false);
   const [commodityCandleError, setCommodityCandleError] = useState<string | null>(null);
@@ -141,6 +149,10 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
     () => METAL_QUOTE_ROWS.find((r) => r.id === paperMetalId) ?? METAL_QUOTE_ROWS[0],
     [paperMetalId]
   );
+  const selectedCrypto = useMemo(
+    () => CRYPTO_QUOTE_ROWS.find((r) => r.id === paperCryptoId) ?? CRYPTO_QUOTE_ROWS[0],
+    [paperCryptoId]
+  );
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSimUserId(data.session?.user?.id ?? null));
@@ -154,6 +166,13 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
     const jpy = selectedForexPair.includes('JPY');
     return jpy ? { precision: 3 as const, minMove: 0.01 } : { precision: 4 as const, minMove: 0.0001 };
   }, [selectedForexPair]);
+
+  const cryptoChartPriceFormat = useMemo(() => {
+    const px = cryptoPrices[paperCryptoId] ?? 1;
+    if (px >= 1000) return { precision: 2 as const, minMove: 0.01 };
+    if (px >= 1) return { precision: 4 as const, minMove: 0.0001 };
+    return { precision: 6 as const, minMove: 0.000001 };
+  }, [cryptoPrices, paperCryptoId]);
 
   const loadWatchlist = useCallback(async () => {
     setWatchLoading(true);
@@ -378,6 +397,46 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
       window.clearInterval(interval);
     };
   }, [panel, finnhubKey]);
+
+  useEffect(() => {
+    if (panel !== 'crypto' || !selectedCrypto) return;
+
+    let cancelled = false;
+
+    const loadCandles = async (reset: boolean) => {
+      if (reset) {
+        setCryptoCandles([]);
+        setCryptoCandleLoading(true);
+        setCryptoCandleError(null);
+        setCryptoCandleDetail(null);
+      }
+      try {
+        const { bars, source, detail } = await fetchCryptoCandlesWithFallback(
+          selectedCrypto.id,
+          cryptoChartResolution
+        );
+        if (!cancelled) {
+          setCryptoCandles(bars);
+          setCryptoCandleSource(source);
+          setCryptoCandleDetail(detail ?? null);
+        }
+      } catch (e: unknown) {
+        if (!cancelled && reset) {
+          setCryptoCandleError(e instanceof Error ? e.message : 'Could not load crypto candles');
+        }
+      } finally {
+        if (!cancelled && reset) setCryptoCandleLoading(false);
+      }
+    };
+
+    void loadCandles(true);
+    const tick = window.setInterval(() => void loadCandles(false), fxChartRefreshIntervalMs(cryptoChartResolution));
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(tick);
+    };
+  }, [panel, selectedCrypto, cryptoChartResolution]);
 
   useEffect(() => {
     if (panel !== 'commodities' || !finnhubKey) return;
@@ -820,10 +879,18 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
                   {CRYPTO_QUOTE_ROWS.map((row) => {
                     const price = cryptoPrices[row.id];
                     const glyph = CRYPTO_ICON[row.id] ?? row.hint.slice(0, 1);
+                    const selected = paperCryptoId === row.id;
                     return (
-                      <div
+                      <button
+                        type="button"
                         key={row.id}
-                        className="shrink-0 rounded-lg border border-indigo-100 bg-white px-2.5 py-1.5 min-w-[4.75rem] flex flex-col items-center text-center shadow-sm"
+                        onClick={() => setPaperCryptoId(row.id)}
+                        aria-pressed={selected}
+                        className={`shrink-0 rounded-lg border bg-white px-2.5 py-1.5 min-w-[4.75rem] flex flex-col items-center text-center shadow-sm transition-shadow ${
+                          selected
+                            ? 'border-indigo-500 ring-2 ring-indigo-400/50 ring-offset-1'
+                            : 'border-indigo-100 hover:border-indigo-200'
+                        }`}
                       >
                         <div className="w-7 h-7 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-black mb-0.5 shadow-inner leading-none">
                           {glyph}
@@ -837,34 +904,20 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
                         <span className="mt-0.5 font-mono text-xs font-bold tabular-nums text-indigo-900 leading-none">
                           {price != null ? `$${formatCrypto(price)}` : '—'}
                         </span>
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
 
                 <div className="mx-4 mb-4 md:mx-5 rounded-xl border border-indigo-100 bg-white px-3 py-3 shadow-sm">
-                  <div className="flex flex-wrap items-center gap-2 mb-2">
-                    <label htmlFor="paper-crypto-select" className="text-[10px] font-black uppercase text-indigo-900">
-                      Paper trade asset
-                    </label>
-                    <select
-                      id="paper-crypto-select"
-                      value={paperCryptoId}
-                      onChange={(e) => setPaperCryptoId(e.target.value)}
-                      className="rounded-lg border border-indigo-200 bg-white px-2 py-1 text-xs font-semibold text-indigo-950"
-                    >
-                      {CRYPTO_QUOTE_ROWS.map((row) => (
-                        <option key={row.id} value={row.id}>
-                          {row.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700 mb-2">
+                    Market simulation · {selectedCrypto?.label ?? paperCryptoId}
+                  </p>
                   <PaperTradeBar
                     userId={simUserId}
                     kind="crypto"
                     symbol={paperCryptoId}
-                    assetLabel={CRYPTO_QUOTE_ROWS.find((r) => r.id === paperCryptoId)?.label ?? paperCryptoId}
+                    assetLabel={selectedCrypto?.label ?? paperCryptoId}
                     price={cryptoPrices[paperCryptoId]}
                     defaultQty="0.05"
                     paperTradingAllowed={isPaperTrader !== false}
@@ -872,10 +925,45 @@ const TradingPlatform: React.FC<{ isPaperTrader?: boolean }> = ({ isPaperTrader 
                 </div>
 
                 <div
-                  className="mx-4 mb-4 md:mx-5 min-h-[180px] md:min-h-[220px] rounded-xl border border-dashed border-indigo-200/70 bg-indigo-50/20 flex items-center justify-center"
-                  aria-label="Reserved for cryptocurrency price charts"
+                  className={`mx-4 mb-4 md:mx-5 flex flex-col gap-3 rounded-xl border border-dashed border-indigo-200/70 bg-indigo-50/20 p-3 ${
+                    cryptoChartResolution === '240' ? 'min-h-[520px] md:min-h-[580px]' : 'min-h-[320px] md:min-h-[380px]'
+                  }`}
                 >
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-400/90">Charts</span>
+                  <div className="flex flex-wrap gap-1.5 items-center">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mr-1">Timeframe</span>
+                    {FX_CHART_RESOLUTIONS.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => setCryptoChartResolution(r.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-colors ${
+                          cryptoChartResolution === r.id
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'bg-white border border-indigo-100 text-indigo-700 hover:bg-indigo-50'
+                        }`}
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div
+                    className={`flex-1 flex flex-col ${
+                      cryptoChartResolution === '240' ? 'min-h-[480px]' : 'min-h-[300px]'
+                    }`}
+                  >
+                    <ForexCandleChart
+                      bars={cryptoCandles}
+                      loading={cryptoCandleLoading}
+                      error={cryptoCandleError}
+                      dataSource={cryptoCandleSource}
+                      diagnostic={cryptoCandleDetail}
+                      resolutionId={cryptoChartResolution}
+                      forexSymbol={`CRYPTO:${paperCryptoId}`}
+                      pricePrecision={cryptoChartPriceFormat.precision}
+                      priceMinMove={cryptoChartPriceFormat.minMove}
+                      pairLabel={`${selectedCrypto?.label ?? paperCryptoId} (${paperCryptoId}-USD)`}
+                    />
+                  </div>
                 </div>
               </>
             )}

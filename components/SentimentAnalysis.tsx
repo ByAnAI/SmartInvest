@@ -1,9 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  articleSignalSentimentSummary,
+  analyzePortfolioViaAlphaVantage,
   analyzeTickerNewsSentiment,
+  emptyNewsSentimentStub,
   equityHoldingsFromSimulation,
+  getSentimentAnalysisSource,
   portfolioAggregateSentiment,
 } from '../services/sentimentAnalysis';
+import { getLlmProvider } from '../services/geminiService';
 import { MARKET_SIMULATION_UPDATED_EVENT } from '../services/marketSimulation';
 import { getFinnhubToken } from '../services/tradingQuotes';
 import type { TickerNewsSentimentAnalysis } from '../types';
@@ -15,10 +20,11 @@ type RowState =
   | { status: 'no_news'; data: TickerNewsSentimentAnalysis }
   | { status: 'error'; message: string };
 
-const SENTIMENT_ROWS_STORAGE_V1 = 'smartinvest_sentiment_rows_v1';
+const SENTIMENT_ROWS_STORAGE_V1 = 'smartinvest_sentiment_rows_v5';
 
-function sentimentStorageKey(userId: string | null | undefined): string {
-  return `${SENTIMENT_ROWS_STORAGE_V1}_${userId ?? '__guest__'}`;
+function sentimentStorageKey(userId: string | null | undefined, source: string, provider: string): string {
+  const engine = source === 'llm' ? `${source}_${provider || 'default'}` : source;
+  return `${SENTIMENT_ROWS_STORAGE_V1}_${engine}_${userId ?? '__guest__'}`;
 }
 
 function reviveRowState(raw: unknown): RowState | null {
@@ -36,9 +42,13 @@ function reviveRowState(raw: unknown): RowState | null {
   return { status: status as 'ok' | 'no_news', data: data as TickerNewsSentimentAnalysis };
 }
 
-function loadPersistedRows(userId: string | null | undefined): Record<string, RowState> {
+function loadPersistedRows(
+  userId: string | null | undefined,
+  source: string,
+  provider: string
+): Record<string, RowState> {
   try {
-    const raw = localStorage.getItem(sentimentStorageKey(userId));
+    const raw = localStorage.getItem(sentimentStorageKey(userId, source, provider));
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const out: Record<string, RowState> = {};
@@ -52,20 +62,30 @@ function loadPersistedRows(userId: string | null | undefined): Record<string, Ro
   }
 }
 
-function persistRows(userId: string | null | undefined, rows: Record<string, RowState>): void {
+function persistRows(
+  userId: string | null | undefined,
+  source: string,
+  provider: string,
+  rows: Record<string, RowState>
+): void {
   try {
-    localStorage.setItem(sentimentStorageKey(userId), JSON.stringify(rows));
+    localStorage.setItem(sentimentStorageKey(userId, source, provider), JSON.stringify(rows));
   } catch {
     /* quota / private mode */
   }
 }
 
-function clearPersistedRows(userId: string | null | undefined): void {
+function clearPersistedRows(userId: string | null | undefined, source: string, provider: string): void {
   try {
-    localStorage.removeItem(sentimentStorageKey(userId));
+    localStorage.removeItem(sentimentStorageKey(userId, source, provider));
+    localStorage.removeItem(`${SENTIMENT_ROWS_STORAGE_V1}_${userId ?? '__guest__'}`);
   } catch {
     /* ignore */
   }
+}
+
+function isHuggingFaceErrorMessage(message: string): boolean {
+  return /hugging\s*face|hf-router|router\.huggingface\.co/i.test(message);
 }
 
 function labelBadgeClass(label: string): string {
@@ -96,10 +116,19 @@ function polarityRowTint(sentiment: string): string {
   return 'bg-amber-50/70';
 }
 
+function formatArticleDate(value: string | undefined): string {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value.slice(0, 10) || '—';
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' });
+}
+
 type Props = { userId?: string | null };
 
 const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
   const finnhubOk = Boolean(getFinnhubToken());
+  const sentimentSource = getSentimentAnalysisSource();
+  const llmProvider = getLlmProvider();
 
   /** Re-read paper equity holdings when simulated portfolio changes (otherwise useMemo[userId] alone misses new buys). */
   const [simRevision, setSimRevision] = useState(0);
@@ -118,9 +147,9 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
   /** Load cached sentiment/news per user when switching account; keep results across navigation until Clear. */
   useEffect(() => {
     setCacheLoaded(false);
-    setRows(loadPersistedRows(userId));
+    setRows(loadPersistedRows(userId, sentimentSource, llmProvider));
     setCacheLoaded(true);
-  }, [userId]);
+  }, [userId, sentimentSource, llmProvider]);
 
   /** New equity tickers start as idle; existing tickers keep cached ok/no_news/error. */
   useEffect(() => {
@@ -138,16 +167,32 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
     });
   }, [holdings, cacheLoaded]);
 
+  /** Source switches should not keep showing stale HF/LLM failures while Alpha Vantage mode is active. */
+  useEffect(() => {
+    if (sentimentSource !== 'alphavantage') return;
+    setRows((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [ticker, row] of Object.entries(next) as Array<[string, RowState]>) {
+        if (row.status === 'error' && isHuggingFaceErrorMessage(row.message)) {
+          next[ticker] = { status: 'idle' };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [sentimentSource]);
+
   /** Persist after analysis completes or Clear; survives tab changes and refresh. */
   useEffect(() => {
     if (!cacheLoaded) return;
-    persistRows(userId, rows);
-  }, [userId, rows, cacheLoaded]);
+    persistRows(userId, sentimentSource, llmProvider, rows);
+  }, [userId, sentimentSource, llmProvider, rows, cacheLoaded]);
 
   const clearResults = useCallback(() => {
-    clearPersistedRows(userId);
+    clearPersistedRows(userId, sentimentSource, llmProvider);
     setRows({});
-  }, [userId]);
+  }, [userId, sentimentSource, llmProvider]);
 
   /** Every completed ticker contributes: full runs (`ok`) and empty-news stubs (`no_news` = neutral baseline). Errors skipped. */
   const portfolioSentimentInputs = useMemo(() => {
@@ -170,11 +215,43 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
     setRunning(true);
     const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+    if (sentimentSource === 'alphavantage') {
+      holdings.forEach((h) => {
+        setRows((prev) => ({ ...prev, [h.ticker]: { status: 'loading' } }));
+      });
+      try {
+        const batch = await analyzePortfolioViaAlphaVantage(holdings.map((h) => h.ticker));
+        setRows((prev) => {
+          const next = { ...prev };
+          for (const h of holdings) {
+            const data = batch[h.ticker] ?? null;
+            if (!data || data.article_analysis.length === 0) {
+              next[h.ticker] = { status: 'no_news', data: data ?? emptyNewsSentimentStub(h.ticker) };
+            } else {
+              next[h.ticker] = { status: 'ok', data };
+            }
+          }
+          return next;
+        });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setRows((prev) => {
+          const next = { ...prev };
+          for (const h of holdings) {
+            next[h.ticker] = { status: 'error', message };
+          }
+          return next;
+        });
+      }
+      setRunning(false);
+      return;
+    }
+
     for (let i = 0; i < holdings.length; i++) {
       const { ticker, companyName } = holdings[i];
       setRows((prev) => ({ ...prev, [ticker]: { status: 'loading' } }));
       try {
-        const data = await analyzeTickerNewsSentiment(ticker, companyName);
+        const data = await analyzeTickerNewsSentiment(ticker, companyName, { source: 'llm' });
         const isEmpty = data.article_analysis.length === 0;
         setRows((prev) => ({
           ...prev,
@@ -195,22 +272,32 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
         <h2 className="text-2xl font-black text-slate-900 tracking-tight">Sentiment analysis</h2>
         <p className="text-sm text-slate-600 max-w-3xl">
           News-driven sentiment for every <span className="font-semibold text-slate-800">stock</span> in your simulated portfolio.
-          Uses Finnhub company headlines and summaries, then scores them with your configured AI model (same token as AI Analysis).
+          {sentimentSource === 'alphavantage' ? (
+            <>
+              {' '}
+              Uses <span className="font-semibold">Alpha Vantage</span> news sentiment. No Hugging Face required.
+            </>
+          ) : (
+            <>
+              {' '}
+              Uses Finnhub headlines, then your LLM (<span className="font-semibold">{llmProvider}</span>). Set{' '}
+              <code className="text-xs bg-slate-100 px-1 rounded">VITE_SENTIMENT_SOURCE=alphavantage</code> to avoid Hugging Face.
+            </>
+          )}
         </p>
       </header>
 
-      {!finnhubOk ? (
+      {sentimentSource === 'llm' && !finnhubOk ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
           <span className="font-semibold">Finnhub key missing.</span> Add{' '}
           <code className="rounded bg-amber-100 px-1 text-xs">VITE_FINNHUB_KEY</code> to load company news.
         </div>
       ) : null}
-
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
           onClick={() => void runAnalysis()}
-          disabled={running || !holdings.length || !finnhubOk}
+          disabled={running || !holdings.length || (sentimentSource === 'llm' && !finnhubOk)}
           className="rounded-xl bg-indigo-600 text-white px-5 py-2.5 text-sm font-black uppercase tracking-wide shadow-lg shadow-indigo-500/25 hover:bg-indigo-700 disabled:opacity-45 disabled:pointer-events-none transition-colors"
         >
           {running ? 'Analyzing…' : 'Analyze portfolio'}
@@ -287,6 +374,10 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
       <div className="space-y-4">
         {holdings.map(({ ticker, companyName }) => {
           const st = rows[ticker] ?? { status: 'idle' as const };
+          const signalSummary =
+            st.status === 'ok' || st.status === 'no_news'
+              ? articleSignalSentimentSummary(st.data.article_analysis)
+              : null;
           return (
             <div key={ticker} className="rounded-2xl border border-slate-100 bg-white shadow-sm overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 bg-slate-50/80">
@@ -305,7 +396,9 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
                 ) : null}
                 {st.status === 'no_news' ? (
                   <div className="flex flex-col items-end gap-1 text-right">
-                    <span className="text-xs font-semibold text-amber-800">No articles in range — neutral baseline</span>
+                    <span className="text-xs font-semibold text-amber-800">
+                      No recent or fallback articles found — neutral baseline
+                    </span>
                     <span className={`text-[11px] font-black px-2 py-0.5 rounded-md border ${labelBadgeClass(st.data.overall_sentiment.label)}`}>
                       Final: {st.data.overall_sentiment.label} ({st.data.overall_sentiment.score.toFixed(2)})
                     </span>
@@ -331,6 +424,11 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
                       <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Score</p>
                       <p className="text-2xl font-black font-mono tabular-nums mt-0.5">
                         {st.data.overall_sentiment.score.toFixed(3)}
+                      </p>
+                      <p className="text-[10px] font-semibold mt-1 opacity-80">
+                        {signalSummary
+                          ? `(${signalSummary.positiveCount} positive + ${signalSummary.negativeCount} negative) / ${signalSummary.signalCount || 0} non-neutral`
+                          : ''}
                       </p>
                     </div>
                   </div>
@@ -368,10 +466,11 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Per-article</p>
                       <div className="overflow-x-auto rounded-xl border border-slate-100">
-                        <table className="w-full text-sm min-w-[920px]">
+                        <table className="w-full text-sm min-w-[1020px]">
                           <thead>
                             <tr className="text-left text-[10px] font-black uppercase text-slate-400 bg-slate-50">
                               <th className="px-3 py-2">Headline</th>
+                              <th className="px-3 py-2 whitespace-nowrap">Date</th>
                               <th className="px-3 py-2 whitespace-nowrap">Source</th>
                               <th className="px-3 py-2 whitespace-nowrap">Article</th>
                               <th className="px-3 py-2 whitespace-nowrap">Sentiment</th>
@@ -386,6 +485,9 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
                                 className={`border-t border-slate-100 align-top ${polarityRowTint(a.sentiment)}`}
                               >
                                 <td className="px-3 py-2 text-slate-900 font-medium max-w-[280px]">{a.title}</td>
+                                <td className="px-3 py-2 text-xs text-slate-700 whitespace-nowrap">
+                                  {formatArticleDate(a.publishedAt)}
+                                </td>
                                 <td className="px-3 py-2 text-xs text-slate-700 whitespace-nowrap">
                                   {a.source && a.source !== 'Unknown' ? (
                                     <span className="font-semibold">{a.source}</span>
@@ -429,9 +531,16 @@ const SentimentAnalysis: React.FC<Props> = ({ userId }) => {
       </div>
 
       <p className="text-[11px] text-slate-500 max-w-2xl">
-        Scores are model estimates from headlines only — not investment advice. Requires{' '}
-        <code className="text-slate-700">VITE_HF_API_TOKEN</code> for the JSON model and{' '}
-        <code className="text-slate-700">VITE_FINNHUB_KEY</code> for articles.
+        Scores are estimates from headline/news sentiment only — not investment advice.{' '}
+        {sentimentSource === 'alphavantage' ? (
+          <>
+            Large portfolios can take several minutes because Alpha Vantage rate limits news requests.
+          </>
+        ) : (
+          <>
+            Requires <code className="text-slate-700">VITE_FINNHUB_KEY</code> and your selected LLM provider.
+          </>
+        )}
       </p>
     </div>
   );

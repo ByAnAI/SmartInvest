@@ -1,10 +1,16 @@
 /**
- * News-based sentiment for simulated portfolio equity tickers (Finnhub + HF JSON completion).
+ * News-based sentiment for simulated portfolio equity tickers.
+ * Default: Alpha Vantage via Watchlist API (no Hugging Face).
+ * Optional LLM path: Finnhub headlines + VITE_LLM_PROVIDER (set VITE_SENTIMENT_SOURCE=llm).
  */
 
 import { fetchFinnhubCompanyNewsBundle, type FinnhubArticleRow } from './finnhubCompanyNews';
-import { generateJsonCompletion, parseModelJson } from './geminiService';
+import { generateJsonCompletion, getLlmProvider, parseModelJson } from './geminiService';
 import { loadMarketSimulationState } from './marketSimulation';
+import {
+  fetchPortfolioNewsSentiment,
+  type PositionNewsSentiment,
+} from './portfolioNewsSentiment';
 import type {
   NewsArticleSentimentRow,
   NewsSentimentLabel,
@@ -14,6 +20,242 @@ import type {
 } from '../types';
 
 const MAX_ARTICLES_FOR_LLM = 14;
+const FALLBACK_NEWS_LOOKBACK_DAYS = [90, 180, 365, 730, 1825];
+
+export type SentimentAnalysisSource = 'alphavantage' | 'llm';
+
+/** Default alphavantage — avoids HF when VITE_LLM_PROVIDER is unset or hf fails. */
+export function getSentimentAnalysisSource(): SentimentAnalysisSource {
+  const v = import.meta.env.VITE_SENTIMENT_SOURCE?.trim().toLowerCase();
+  if (v === 'llm' || v === 'hf' || v === 'ollama' || v === 'gemini' || v === 'ai') return 'llm';
+  return 'alphavantage';
+}
+
+function scoreToPolarity(score: number): NewsSentimentPolarity {
+  if (score > 0.05) return 'POSITIVE';
+  if (score < -0.05) return 'NEGATIVE';
+  return 'NEUTRAL';
+}
+
+function scoreToNewsLabel(score: number): NewsSentimentLabel {
+  if (score > 0.12) return 'BULLISH';
+  if (score < -0.12) return 'BEARISH';
+  return 'NEUTRAL';
+}
+
+function shortTermFromScore(avg: number): { direction: ShortTermImpactDirection; confidence: number } {
+  const confidence = Math.min(1, Math.max(0, Math.abs(avg) * 2));
+  if (avg > 0.1) return { direction: 'UP', confidence };
+  if (avg < -0.1) return { direction: 'DOWN', confidence };
+  return { direction: 'NO IMPACT', confidence };
+}
+
+function normalizeAlphaVantageTime(raw: string | null | undefined): string | undefined {
+  const s = String(raw ?? '').trim();
+  if (!s) return undefined;
+  const m = s.match(/^(\d{4})(\d{2})(\d{2})T?(\d{2})?(\d{2})?(\d{2})?/);
+  if (!m) return s;
+  const [, y, mo, d, h = '00', mi = '00', sec = '00'] = m;
+  return `${y}-${mo}-${d}T${h}:${mi}:${sec}Z`;
+}
+
+function normalizeArticleTextKey(value: string | undefined): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/https?:\/\/(www\.)?/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function articleDateKey(value: string | undefined): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
+function localDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function articleTimeMs(article: NewsArticleSentimentRow): number {
+  if (!article.publishedAt) return 0;
+  const t = new Date(article.publishedAt).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function articleDedupeKey(article: NewsArticleSentimentRow): string {
+  const url = normalizeArticleTextKey(article.url);
+  if (url) return `url:${url}`;
+
+  const title = normalizeArticleTextKey(article.title);
+  const source = normalizeArticleTextKey(article.source);
+  const date = articleDateKey(article.publishedAt);
+  return `title:${title}|source:${source}|date:${date}`;
+}
+
+function dedupeArticleRows(articles: NewsArticleSentimentRow[]): NewsArticleSentimentRow[] {
+  const seen = new Set<string>();
+  const out: NewsArticleSentimentRow[] = [];
+  for (const article of articles) {
+    const key = articleDedupeKey(article);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(article);
+  }
+  return out;
+}
+
+function selectSentimentArticleRows(articles: NewsArticleSentimentRow[]): NewsArticleSentimentRow[] {
+  const sorted = dedupeArticleRows(articles).sort((a, b) => articleTimeMs(b) - articleTimeMs(a));
+  return sorted.slice(0, 5);
+}
+
+function selectFinnhubArticlesForSentiment(articles: FinnhubArticleRow[]): FinnhubArticleRow[] {
+  const seen = new Set<string>();
+  const deduped: FinnhubArticleRow[] = [];
+  for (const article of articles) {
+    const publishedAt = article.datetime ? new Date(article.datetime * 1000).toISOString() : '';
+    const url = normalizeArticleTextKey(article.url);
+    const key = url
+      ? `url:${url}`
+      : `title:${normalizeArticleTextKey(article.headline)}|source:${normalizeArticleTextKey(article.source)}|date:${articleDateKey(publishedAt)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(article);
+  }
+
+  const sorted = deduped.sort((a, b) => (b.datetime ?? 0) - (a.datetime ?? 0));
+  return sorted.slice(0, 5);
+}
+
+async function fetchLatestFinnhubArticlesForFallback(
+  ticker: string,
+  maxArticles = 5
+): Promise<FinnhubArticleRow[]> {
+  for (const daysBack of FALLBACK_NEWS_LOOKBACK_DAYS) {
+    const bundle = await fetchFinnhubCompanyNewsBundle(ticker, { daysBack, maxArticles });
+    if (bundle.status === 'ok' && bundle.articles.length > 0) {
+      return selectFinnhubArticlesForSentiment(bundle.articles).slice(0, maxArticles);
+    }
+    if (bundle.status === 'skipped_no_key' || bundle.status === 'error') return [];
+  }
+  return [];
+}
+
+function finnhubFallbackArticlesToNeutralRows(articles: FinnhubArticleRow[]): NewsArticleSentimentRow[] {
+  return articles.map((a) => ({
+    title: String(a.headline ?? '').slice(0, 500),
+    sentiment: 'NEUTRAL',
+    score: 0,
+    reason: 'Latest available article fallback; no ticker sentiment score was returned by the primary news source.',
+    publishedAt: a.datetime ? new Date(a.datetime * 1000).toISOString() : undefined,
+    source: (a.source || '').trim() || undefined,
+    url: (a.url || '').trim() || undefined,
+  }));
+}
+
+export function articleSignalSentimentSummary(articles: NewsArticleSentimentRow[]): {
+  score: number;
+  label: NewsSentimentLabel;
+  positiveCount: number;
+  negativeCount: number;
+  neutralCount: number;
+  signalCount: number;
+  totalCount: number;
+} {
+  let sum = 0;
+  let positiveCount = 0;
+  let negativeCount = 0;
+  let neutralCount = 0;
+
+  for (const article of articles) {
+    const sentiment = article.sentiment;
+    const score = Number.isFinite(article.score) ? clamp(article.score, -1, 1) : 0;
+    if (sentiment === 'POSITIVE') {
+      positiveCount += 1;
+      sum += score;
+    } else if (sentiment === 'NEGATIVE') {
+      negativeCount += 1;
+      sum += score;
+    } else {
+      neutralCount += 1;
+    }
+  }
+
+  const signalCount = positiveCount + negativeCount;
+  const score = signalCount > 0 ? sum / signalCount : 0;
+  return {
+    score,
+    label: scoreToNewsLabel(score),
+    positiveCount,
+    negativeCount,
+    neutralCount,
+    signalCount,
+    totalCount: articles.length,
+  };
+}
+
+function applyArticleSignalScore(analysis: TickerNewsSentimentAnalysis): TickerNewsSentimentAnalysis {
+  const article_analysis = selectSentimentArticleRows(analysis.article_analysis);
+  const summary = articleSignalSentimentSummary(article_analysis);
+  const score = summary.signalCount > 0 ? summary.score : 0;
+  return {
+    ...analysis,
+    article_analysis,
+    overall_sentiment: { score, label: summary.label },
+    short_term_impact: shortTermFromScore(score),
+  };
+}
+
+function mapAvPositionToTickerAnalysis(p: PositionNewsSentiment): TickerNewsSentimentAnalysis {
+  const article_analysis: NewsArticleSentimentRow[] = (p.articles ?? []).map((a) => {
+    const score = typeof a.sentiment === 'number' && Number.isFinite(a.sentiment) ? a.sentiment : 0;
+    return {
+      title: String(a.title ?? '').slice(0, 500),
+      sentiment: scoreToPolarity(score),
+      score: clamp(score, -1, 1),
+      reason: `Alpha Vantage: ${a.sentiment_label ?? '—'}`,
+      publishedAt: normalizeAlphaVantageTime(a.time),
+      source: a.source?.trim() || undefined,
+      url: a.url?.trim() || undefined,
+    };
+  });
+  return applyArticleSignalScore({
+    ticker: p.symbol.toUpperCase(),
+    article_analysis,
+    overall_sentiment: { score: 0, label: 'NEUTRAL' },
+    short_term_impact: shortTermFromScore(0),
+    detected_events: [],
+  });
+}
+
+/** Batch sentiment from Alpha Vantage (Watchlist API must be running). */
+export async function analyzePortfolioViaAlphaVantage(
+  tickers: string[]
+): Promise<Record<string, TickerNewsSentimentAnalysis>> {
+  const payload = await fetchPortfolioNewsSentiment(tickers);
+  const out: Record<string, TickerNewsSentimentAnalysis> = {};
+  for (const p of payload.positions) {
+    const mapped = mapAvPositionToTickerAnalysis(p);
+    if (mapped.article_analysis.length === 0) {
+      const fallbackArticles = await fetchLatestFinnhubArticlesForFallback(p.symbol, 5);
+      if (fallbackArticles.length > 0) {
+        out[p.symbol.toUpperCase()] = applyArticleSignalScore({
+          ...mapped,
+          article_analysis: finnhubFallbackArticlesToNeutralRows(fallbackArticles),
+        });
+        continue;
+      }
+    }
+    out[p.symbol.toUpperCase()] = mapped;
+  }
+  return out;
+}
 
 export type NewsItemForPrompt = {
   title: string;
@@ -178,6 +420,7 @@ function enrichArticleAnalysisWithFinnhub(rows: NewsArticleSentimentRow[], finnh
         ...r,
         source: (a.source || '').trim() || 'Unknown',
         url: (a.url || '').trim(),
+        publishedAt: a.datetime ? new Date(a.datetime * 1000).toISOString() : r.publishedAt,
       };
     }
     return {
@@ -209,6 +452,7 @@ function normalizeAnalysis(raw: unknown, ticker: string): TickerNewsSentimentAna
       sentiment: parsePolarity(r.sentiment),
       score: clamp(typeof r.score === 'number' && Number.isFinite(r.score) ? r.score : 0, -1, 1),
       reason: String(r.reason ?? '').slice(0, 400),
+      publishedAt: String(r.publishedAt ?? r.published_at ?? '').trim().slice(0, 80) || undefined,
       source: String(r.source ?? '').trim().slice(0, 120) || undefined,
       url: String(r.url ?? '').trim().slice(0, 2000) || undefined,
     };
@@ -253,13 +497,32 @@ export function emptyNewsSentimentStub(ticker: string): TickerNewsSentimentAnaly
 export async function analyzeTickerNewsSentiment(
   ticker: string,
   companyName: string,
-  options?: { daysBack?: number; maxArticles?: number }
+  options?: { daysBack?: number; maxArticles?: number; source?: SentimentAnalysisSource }
 ): Promise<TickerNewsSentimentAnalysis> {
   const sym = ticker.trim().toUpperCase();
-  const bundle = await fetchFinnhubCompanyNewsBundle(sym, {
+  const source = options?.source ?? getSentimentAnalysisSource();
+
+  if (source === 'alphavantage') {
+    const batch = await analyzePortfolioViaAlphaVantage([sym]);
+    const data = batch[sym];
+    if (data) return data;
+    return emptyNewsSentimentStub(sym);
+  }
+
+  let bundle = await fetchFinnhubCompanyNewsBundle(sym, {
     daysBack: options?.daysBack ?? 21,
     maxArticles: options?.maxArticles ?? 18,
   });
+
+  if (bundle.status === 'empty') {
+    for (const daysBack of FALLBACK_NEWS_LOOKBACK_DAYS) {
+      bundle = await fetchFinnhubCompanyNewsBundle(sym, {
+        daysBack,
+        maxArticles: options?.maxArticles ?? 18,
+      });
+      if (bundle.status !== 'empty') break;
+    }
+  }
 
   if (bundle.status === 'skipped_no_key') {
     throw new Error('Finnhub API key missing. Add VITE_FINNHUB_KEY to load company news.');
@@ -298,7 +561,8 @@ export async function analyzeArticlesSentiment(
   articles: FinnhubArticleRow[]
 ): Promise<TickerNewsSentimentAnalysis> {
   const sym = ticker.trim().toUpperCase();
-  if (!articles.length) {
+  const selectedArticles = selectFinnhubArticlesForSentiment(articles);
+  if (!selectedArticles.length) {
     return {
       ticker: sym,
       article_analysis: [],
@@ -307,7 +571,7 @@ export async function analyzeArticlesSentiment(
       detected_events: [],
     };
   }
-  const items = finnhubArticlesToNewsItems(articles);
+  const items = finnhubArticlesToNewsItems(selectedArticles);
   const prompt = buildSentimentPrompt(sym, companyName || sym, items);
   const raw = await generateJsonCompletion(prompt, 8192);
   const jsonStr = parseModelJson(raw);
@@ -318,8 +582,8 @@ export async function analyzeArticlesSentiment(
     throw new Error('AI returned invalid JSON for sentiment analysis.');
   }
   const normalized = normalizeAnalysis(parsed, sym);
-  normalized.article_analysis = enrichArticleAnalysisWithFinnhub(normalized.article_analysis, articles);
-  return normalized;
+  normalized.article_analysis = enrichArticleAnalysisWithFinnhub(normalized.article_analysis, selectedArticles);
+  return applyArticleSignalScore(normalized);
 }
 
 /** Ticker counts toward portfolio average only if overall score or article-level signal is non-neutral / non-zero. */

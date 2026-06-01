@@ -87,6 +87,37 @@ export interface GrowthRiskDashboardReport {
   riskFactors: GrowthRiskDashboardItem[];
 }
 
+export type IndustryLifecycleStage = 'Introduction' | 'Growth' | 'Maturity' | 'Decline';
+
+export interface IndustryLifecycleSignal {
+  metric: string;
+  value: string;
+  signal: string;
+  stageBias: IndustryLifecycleStage;
+}
+
+export interface IndustryLifecycleReport {
+  subjectLabel: string;
+  stage: IndustryLifecycleStage;
+  confidence: number;
+  strategy: string;
+  summary: string;
+  leaderName?: string;
+  leaderTitle?: string;
+  leadershipSentiment?: 'Positive' | 'Neutral' | 'Negative' | 'Mixed';
+  managementStyle?: string;
+  capitalAllocationStyle?: string;
+  executionQuality?: string;
+  governanceAssessment?: string;
+  yahooDataPrompt: string;
+  missingYahooFields: string[];
+  signals: IndustryLifecycleSignal[];
+  explanation: string;
+  lifecycleRotation: string;
+  eventDetections: string[];
+  subSectorCombo: string;
+}
+
 /** Structured news sentiment (portfolio sentiment tab); matches LLM JSON contract. */
 export type NewsSentimentPolarity = 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL';
 export type NewsSentimentLabel = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
@@ -97,6 +128,8 @@ export interface NewsArticleSentimentRow {
   sentiment: NewsSentimentPolarity;
   score: number;
   reason: string;
+  /** Article publish date/time, normalized to ISO when available. */
+  publishedAt?: string;
   /** Publisher (from Finnhub). */
   source?: string;
   /** Link to full article when available. */

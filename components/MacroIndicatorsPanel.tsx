@@ -12,7 +12,7 @@ import {
   saveMacroReportForDate,
   stripMacroReportFileHeader,
 } from '../services/macroReportCache';
-import { getDefaultWatchlistApiBase } from '../utils/watchlistApiFetch';
+import { formatWatchlistApiFetchError, getDefaultWatchlistApiBase } from '../utils/watchlistApiFetch';
 import MacroReportBody from './MacroReportBody';
 
 function formatAsOf(date: string | null): string {
@@ -22,7 +22,7 @@ function formatAsOf(date: string | null): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function IndicatorCard({ row }: { row: MacroIndicatorRow }) {
+function IndicatorCard({ row }: { row: MacroIndicatorRow; key?: React.Key }) {
   return (
     <div className="rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2.5 hover:border-blue-300 hover:bg-blue-50 transition-colors">
       <p className="text-[9px] font-black uppercase tracking-widest text-blue-700 leading-tight line-clamp-2 min-h-[2rem]">
@@ -53,14 +53,15 @@ const MacroIndicatorsPanel: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const apiBase = getDefaultWatchlistApiBase();
     try {
-      const data = await fetchMacroDaily(getDefaultWatchlistApiBase());
+      const data = await fetchMacroDaily(apiBase);
       setRows(data.indicators ?? []);
       setCollectionDate(data.collection_date ?? null);
       setCollectionUtc(data.collection_utc ?? null);
     } catch (e: unknown) {
       setRows([]);
-      setError(e instanceof Error ? e.message : 'Could not load macro indicators.');
+      setError(formatWatchlistApiFetchError(e, `${apiBase}/api/macro/daily`));
     } finally {
       setLoading(false);
     }
@@ -86,6 +87,7 @@ const MacroIndicatorsPanel: React.FC = () => {
   const collectedLabel = collectionUtc
     ? new Date(collectionUtc).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
     : collectionDate ?? null;
+  const todayReportDate = localReportDateKey();
 
   const applyCachedReport = useCallback((reportDate: string, raw: string) => {
     setReport(stripMacroReportFileHeader(raw));
@@ -96,8 +98,9 @@ const MacroIndicatorsPanel: React.FC = () => {
   const loadTodayReportIfSaved = useCallback(async () => {
     const day = localReportDateKey();
     try {
-      const cached = await fetchMacroReportForDate(day, getDefaultWatchlistApiBase());
-      if (cached.found && cached.content?.trim()) {
+      const apiBase = getDefaultWatchlistApiBase();
+      const cached = await fetchMacroReportForDate(day, apiBase);
+      if (cached.found && cached.report_date === day && cached.content?.trim()) {
         applyCachedReport(day, cached.content);
         return true;
       }
@@ -124,8 +127,9 @@ const MacroIndicatorsPanel: React.FC = () => {
     setReportError(null);
     try {
       const day = localReportDateKey();
-      const cached = await fetchMacroReportForDate(day, getDefaultWatchlistApiBase());
-      if (cached.found && cached.content?.trim()) {
+      const apiBase = getDefaultWatchlistApiBase();
+      const cached = await fetchMacroReportForDate(day, apiBase);
+      if (cached.found && cached.report_date === day && cached.content?.trim()) {
         applyCachedReport(day, cached.content);
         return;
       }
@@ -134,7 +138,7 @@ const MacroIndicatorsPanel: React.FC = () => {
         collection_date: collectionDate,
         collection_utc: collectionUtc,
       });
-      await saveMacroReportForDate(day, text, getDefaultWatchlistApiBase());
+      await saveMacroReportForDate(day, text, apiBase);
       setReport(text);
       setReportDateLabel(day);
       setReportFromCache(false);
@@ -161,6 +165,9 @@ const MacroIndicatorsPanel: React.FC = () => {
           {collectedLabel ? (
             <p className="text-[10px] text-blue-600/80 mt-1 font-medium">Collected {collectedLabel}</p>
           ) : null}
+          <p className="text-[10px] text-blue-600/80 mt-1 font-medium">
+            Daily report file: macro_report_{todayReportDate}.txt
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -179,8 +186,8 @@ const MacroIndicatorsPanel: React.FC = () => {
           >
             {reportLoading
               ? 'Loading…'
-              : report && reportDateLabel === localReportDateKey()
-                ? "Today's report"
+              : report && reportDateLabel === todayReportDate
+                ? "Upload today's report"
                 : 'Generate macro report'}
           </button>
         </div>
@@ -251,7 +258,7 @@ const MacroIndicatorsPanel: React.FC = () => {
           <MacroReportBody text={report} />
           <p className="mt-4 text-[9px] text-slate-400 uppercase tracking-widest">
             AI-generated from macro_daily.csv · stored as backend/data/macro_reports/macro_report_
-            {reportDateLabel ?? localReportDateKey()}.txt · not investment advice
+            {reportDateLabel ?? todayReportDate}.txt · not investment advice
           </p>
         </div>
       ) : null}

@@ -12,6 +12,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "watchlist-api": "node scripts/watchlist-api.mjs",
+    "watchlist-api:fresh": "node scripts/free-watchlist-port.mjs && node scripts/watchlist-api.mjs",
     "uvicorn": "node scripts/watchlist-api.mjs",
     "watchlist-api:setup": "cd backend && python3 -m venv .venv && ./.venv/bin/pip install --upgrade pip && ./.venv/bin/pip install -r requirements.txt",
     "watchlist-api:reload": "WATCHLIST_API_RELOAD=1 node scripts/watchlist-api.mjs",

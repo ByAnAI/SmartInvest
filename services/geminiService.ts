@@ -4,6 +4,9 @@ import {
   type GrowthRiskDashboardReport,
   type GrowthRiskDashboardItem,
   type GrowthRiskImpactLevel,
+  type IndustryLifecycleReport,
+  type IndustryLifecycleSignal,
+  type IndustryLifecycleStage,
 } from "../types";
 
 const SYSTEM_INSTRUCTION = `You are a world-class senior investment advisor and financial analyst. 
@@ -121,6 +124,20 @@ function isGeminiRecoverableFallbackError(e: unknown): boolean {
     return true;
   }
   return false;
+}
+
+function isHfRecoverableFallbackError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return (
+    /Hugging Face API error\s+(502|503|504)|router proxy could not reach|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network|Failed to fetch|browser got no response|model is loading or busy/i.test(
+      msg
+    )
+  );
+}
+
+function summarizeLlmError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.length > 420 ? `${msg.slice(0, 420)}…` : msg;
 }
 
 /**
@@ -296,13 +313,14 @@ const getHfModelId = (): string => {
 
 type LlmProviderId = 'hf' | 'ollama' | 'gemini';
 type GeminiNetworkFallbackProvider = 'none' | 'hf' | 'ollama' | 'auto';
+type HfNetworkFallbackProvider = 'none' | 'ollama' | 'gemini' | 'auto';
 
 /**
  * `hf` — Hugging Face Inference Providers (router).
  * `ollama` — local Ollama at localhost (no HF credits).
  * `gemini` — Google Gemini API (`VITE_GEMINI_API_KEY`).
  */
-function getLlmProvider(): LlmProviderId {
+export function getLlmProvider(): LlmProviderId {
   const v = import.meta.env.VITE_LLM_PROVIDER?.trim().toLowerCase();
   if (v === 'ollama' || v === 'local') return 'ollama';
   if (v === 'gemini' || v === 'google') return 'gemini';
@@ -317,6 +335,24 @@ function getGeminiNetworkFallbackProvider(): GeminiNetworkFallbackProvider {
   if (v === 'none' || v === 'off' || v === 'disabled') return 'none';
   /** Default to auto so Gemini network failures still return analysis. */
   return 'auto';
+}
+
+function getHfNetworkFallbackProvider(): HfNetworkFallbackProvider {
+  const v = import.meta.env.VITE_HF_NETWORK_FALLBACK_PROVIDER?.trim().toLowerCase();
+  if (v === 'ollama') return 'ollama';
+  if (v === 'gemini' || v === 'google') return 'gemini';
+  if (v === 'auto') return 'auto';
+  if (v === 'none' || v === 'off' || v === 'disabled') return 'none';
+  /** Default to local-first fallback so HF router/proxy outages don't break analysis. */
+  return 'auto';
+}
+
+function hasGeminiApiKey(): boolean {
+  const viteKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const viteCompatKey = import.meta.env.GEMINI_API_KEY;
+  const nodeKey = typeof process !== 'undefined' ? process.env?.API_KEY : undefined;
+  const nodeCompatKey = typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined;
+  return String(viteKey || viteCompatKey || nodeKey || nodeCompatKey || '').trim().length > 0;
 }
 
 const getGeminiApiKey = (): string => {
@@ -483,6 +519,26 @@ function getOllamaModelId(): string {
   return m || 'qwen2.5:7b';
 }
 
+/** Layers on GPU; 0 = CPU-only (default — avoids runner crashes on 2GB GPUs). Set VITE_OLLAMA_NUM_GPU>0 to use GPU. */
+function resolveOllamaNumGpu(): number {
+  const raw = import.meta.env.VITE_OLLAMA_NUM_GPU?.trim();
+  if (raw == null || raw === '') return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
+function buildOllamaChatOptions(
+  maxTokens: number,
+  temperature: number
+): Record<string, number> {
+  return {
+    num_predict: maxTokens,
+    temperature,
+    num_gpu: resolveOllamaNumGpu(),
+  };
+}
+
 function buildSystemPrompt(jsonOnly?: boolean): string {
   let system = SYSTEM_INSTRUCTION;
   if (jsonOnly) {
@@ -514,7 +570,7 @@ async function ollamaGenerateText(
           { role: 'user', content: userContent },
         ],
         stream: false,
-        options: { num_predict: maxTokens, temperature },
+        options: buildOllamaChatOptions(maxTokens, temperature),
       }),
     });
   } catch (e: unknown) {
@@ -526,8 +582,15 @@ async function ollamaGenerateText(
 
   const textBody = await res.text();
   if (!res.ok) {
+    const cpuHint =
+      resolveOllamaNumGpu() === 0
+        ? ' CPU-only mode (num_gpu=0). If the runner still crashes, try VITE_OLLAMA_MODEL=qwen2.5:3b and restart Ollama with: OLLAMA_NUM_GPU=0 ollama serve'
+        : '';
+    const runnerHint = /runner process has terminated/i.test(textBody)
+      ? cpuHint
+      : '';
     throw new Error(
-      `Ollama API error ${res.status}: ${textBody.slice(0, 600)}. Try: ollama pull ${model}`
+      `Ollama API error ${res.status}: ${textBody.slice(0, 600)}. Try: ollama pull ${model}.${runnerHint}`
     );
   }
   let data: { message?: { content?: string }; error?: string };
@@ -862,7 +925,43 @@ async function hfGenerateText(
       throw lastFallbackErr instanceof Error ? lastFallbackErr : e;
     }
   }
-  return hfGenerateTextViaHfRouter(userContent, maxTokens, opts);
+  try {
+    return await hfGenerateTextViaHfRouter(userContent, maxTokens, opts);
+  } catch (e) {
+    if (!isHfRecoverableFallbackError(e)) throw e;
+    const fallback = getHfNetworkFallbackProvider();
+    if (fallback === 'none') throw e;
+
+    const attempts: Array<{ label: string; run: () => Promise<string> }> =
+      fallback === 'ollama'
+        ? [{ label: 'Ollama', run: () => ollamaGenerateText(userContent, maxTokens, opts) }]
+        : fallback === 'gemini'
+          ? [{ label: 'Gemini', run: () => geminiGenerateText(userContent, maxTokens, opts) }]
+          : [
+              { label: 'Ollama', run: () => ollamaGenerateText(userContent, maxTokens, opts) },
+              ...(hasGeminiApiKey()
+                ? [{ label: 'Gemini', run: () => geminiGenerateText(userContent, maxTokens, opts) }]
+                : []),
+            ];
+
+    const fallbackErrors: string[] = [];
+    for (const attempt of attempts) {
+      try {
+        return await attempt.run();
+      } catch (fallbackErr) {
+        fallbackErrors.push(`${attempt.label}: ${summarizeLlmError(fallbackErr)}`);
+      }
+    }
+
+    throw new Error(
+      [
+        `Hugging Face is temporarily unreachable, and no fallback LLM completed.`,
+        `HF error: ${summarizeLlmError(e)}`,
+        fallbackErrors.length ? `Fallback errors: ${fallbackErrors.join(' | ')}` : 'No fallback provider was configured.',
+        'Fix: run Ollama locally and set VITE_HF_NETWORK_FALLBACK_PROVIDER=ollama, or set VITE_LLM_PROVIDER=gemini with VITE_GEMINI_API_KEY. Then restart npm run dev.',
+      ].join(' ')
+    );
+  }
 }
 
 /** JSON-only chat completion for structured pipelines (e.g. news sentiment). Routes per `VITE_LLM_PROVIDER` (hf / ollama / gemini). */
@@ -1017,22 +1116,24 @@ function buildGrowthRiskDashboardPrompt(
   const label = subjectPrimary.trim();
   const secondary = (subjectSecondary || "").trim();
   return [
-    "You are a financial analyst writing dashboard copy — short labels, no fluff.",
+    "You are a financial analyst writing dashboard copy. Be evidence-dense and make maximum use of the watchlist values.",
     "",
     mode === "ticker"
       ? `Scope: single EQUITY ticker ${label}.`
       : `Scope: SECTOR aggregate for "${label}" (cross-company averages in the data block).`,
     secondary ? `Context line: ${secondary}` : "",
     "",
-    "Using ONLY the data block, produce:",
-    "1) growth_summary — max 220 characters, dashboard headline for growth/opportunity.",
-    "2) risk_summary — max 220 characters, dashboard headline for risks.",
+    mode === "ticker"
+      ? "Use the PRIMARY WATCHLIST VALUES as the highest-priority quantitative source. Use NEWS SENTIMENT, TODAY TICKER NEWS, and FRED MACRO REPORT only as secondary context for catalysts/macro categories; never let them override watchlist valuation/risk numbers."
+      : "Using ONLY the sector data block, produce:",
+    "1) growth_summary — max 420 characters, dashboard headline for growth/opportunity with specific watchlist values.",
+    "2) risk_summary — max 420 characters, dashboard headline for risks with specific watchlist values.",
     `3) growth_drivers — at most ${GROWTH_RISK_DASHBOARD_MAX_ITEMS} items, sorted by score descending.`,
     `4) risk_factors — at most ${GROWTH_RISK_DASHBOARD_MAX_ITEMS} items, sorted by score descending.`,
     "",
-    "Each item: title (≤40 chars, chart-style), description (≤140 chars, one tight sentence), impact_level (Low|Medium|High), category (Financial|Market|Product|Macro|Operational|Competitive — pick best fit), score (0–100, evidence-weighted).",
+    "Each item: title (≤48 chars, chart-style), description (≤260 chars, one evidence-rich sentence with cited values), impact_level (Low|Medium|High), category (Financial|Market|Product|Macro|Operational|Competitive — pick best fit), score (0–100, evidence-weighted).",
     "Every object in growth_drivers and risk_factors MUST include a non-empty string for \"description\" (even a short clause).",
-    "Spread items across categories where the data supports it; avoid duplicate themes.",
+    "Spread items across categories where the data supports it; include Macro or Market only when the FRED/news/sentiment context supports it; avoid duplicate themes.",
     "",
     "Return ONLY valid JSON with keys:",
     `- scope: "${scope}"`,
@@ -1040,7 +1141,7 @@ function buildGrowthRiskDashboardPrompt(
     "- growth_summary, risk_summary (strings)",
     "- growth_drivers, risk_factors (arrays of objects with title, description, impact_level, category, score)",
     "",
-    "Rules: ground every claim in the block; if data is thin, lower scores and use Low/Medium impact; no markdown fences.",
+    "Rules: ground every claim in the block; prefer watchlist values over narrative context; if data is thin, lower scores and use Low/Medium impact; no markdown fences.",
     "",
     "=== DATA ===",
     dataBlock.trim(),
@@ -1075,6 +1176,211 @@ export async function getGrowthRiskDashboard(
   }
   normalized.scope = mode;
   return normalized;
+}
+
+function normalizeIndustryLifecycleStage(raw: unknown): IndustryLifecycleStage {
+  const text = String(raw ?? "").trim().toLowerCase();
+  if (text.includes("growth")) return "Growth";
+  if (text.includes("matur")) return "Maturity";
+  if (text.includes("declin")) return "Decline";
+  return "Introduction";
+}
+
+function normalizeLifecycleSignal(entry: unknown, fallbackMetric: string): IndustryLifecycleSignal | null {
+  if (!entry || typeof entry !== "object") return null;
+  const o = entry as Record<string, unknown>;
+  const metric = String(o.metric ?? o.name ?? fallbackMetric).trim();
+  if (!metric) return null;
+  return {
+    metric: metric.slice(0, 64),
+    value: String(o.value ?? "N/A").trim().slice(0, 96) || "N/A",
+    signal: String(o.signal ?? o.interpretation ?? o.reason ?? "No signal provided.").trim().slice(0, 180),
+    stageBias: normalizeIndustryLifecycleStage(o.stage_bias ?? o.stageBias ?? o.bias),
+  };
+}
+
+function normalizeIndustryLifecycleReport(parsed: unknown, fallbackSubject: string): IndustryLifecycleReport {
+  const obj = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+  const stage = normalizeIndustryLifecycleStage(obj.stage ?? obj.lifecycle_stage);
+  const subjectLabel = String(obj.subject_label ?? obj.subjectLabel ?? fallbackSubject).trim() || fallbackSubject;
+  let confidence = Number(obj.confidence ?? obj.confidence_score);
+  if (!Number.isFinite(confidence)) confidence = 50;
+  confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+  const rawSignals = obj.signals ?? obj.data_signals ?? obj.lifecycle_signals;
+  const signals = (Array.isArray(rawSignals) ? rawSignals : [])
+    .map((entry, i) => normalizeLifecycleSignal(entry, `Signal ${i + 1}`))
+    .filter((x): x is IndustryLifecycleSignal => x != null)
+    .slice(0, 10);
+  const rawMissing = obj.missing_yahoo_fields ?? obj.missingYahooFields ?? obj.missing_data ?? [];
+  const missingYahooFields = (Array.isArray(rawMissing) ? rawMissing : [])
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+  const rawEvents = obj.event_detections ?? obj.eventDetections ?? obj.events ?? [];
+  const eventDetections = (Array.isArray(rawEvents) ? rawEvents : [])
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const sentimentRaw = String(obj.leadership_sentiment ?? obj.leadershipSentiment ?? "").trim().toLowerCase();
+  const leadershipSentiment: IndustryLifecycleReport["leadershipSentiment"] =
+    sentimentRaw.includes("positive")
+      ? "Positive"
+      : sentimentRaw.includes("negative")
+        ? "Negative"
+        : sentimentRaw.includes("mixed")
+          ? "Mixed"
+          : sentimentRaw.includes("neutral")
+            ? "Neutral"
+            : undefined;
+
+  return {
+    subjectLabel,
+    stage,
+    confidence,
+    strategy: String(obj.strategy ?? "").trim() || "Use a selective posture until lifecycle signals become clearer.",
+    summary: String(obj.summary ?? obj.executive_summary ?? "").trim() || `${subjectLabel} is classified as ${stage}.`,
+    leaderName: String(obj.leader_name ?? obj.leaderName ?? "").trim() || undefined,
+    leaderTitle: String(obj.leader_title ?? obj.leaderTitle ?? "").trim() || undefined,
+    leadershipSentiment,
+    managementStyle: String(obj.management_style ?? obj.managementStyle ?? "").trim() || undefined,
+    capitalAllocationStyle: String(obj.capital_allocation_style ?? obj.capitalAllocationStyle ?? "").trim() || undefined,
+    executionQuality: String(obj.execution_quality ?? obj.executionQuality ?? "").trim() || undefined,
+    governanceAssessment: String(obj.governance_assessment ?? obj.governanceAssessment ?? "").trim() || undefined,
+    yahooDataPrompt: String(obj.yahoo_data_prompt ?? obj.yahooDataPrompt ?? "").trim(),
+    missingYahooFields,
+    signals,
+    explanation: String(obj.explanation ?? obj.rationale ?? "").trim(),
+    lifecycleRotation: String(obj.lifecycle_rotation ?? obj.lifecycleRotation ?? "").trim(),
+    eventDetections,
+    subSectorCombo: String(
+      obj.subsector_combo ?? obj.subSectorCombo ?? obj.business_combo ?? obj.businessCombo ?? obj.lifecycle_combo ?? subjectLabel
+    ).trim(),
+  };
+}
+
+function buildLeadershipLifecyclePrompt(subjectLabel: string, dataBlock: string): string {
+  return [
+    "You are a leadership lifecycle analyst for public companies. Classify the lifecycle stage of the company leader / management regime for a single ticker.",
+    "",
+    `Subject: ${subjectLabel}`,
+    "",
+    "Leadership lifecycle framework:",
+    "- Introduction: new leader or new strategic regime; high uncertainty; transformation not proven yet.",
+    "- Growth: leader is scaling revenue/products, reinvesting, expanding margins or market share, and market sentiment supports execution.",
+    "- Maturity: leader runs a stable cash-flow machine; focus is efficiency, capital returns, governance, and disciplined value creation.",
+    "- Decline: leadership faces falling demand, weak execution, disruption, credibility pressure, or defensive restructuring.",
+    "",
+    "Use company fundamentals, Yahoo leader/governance fields, and Yahoo Finance news headlines in the data block only. Include the leader name and title if present. If the leader is missing, say leadership identity is missing and include it in missing_yahoo_fields.",
+    "",
+    "Return ONLY valid JSON with these keys:",
+    "- subject_label: string",
+    "- leader_name: string",
+    "- leader_title: string",
+    "- stage: Introduction | Growth | Maturity | Decline",
+    "- confidence: integer 0-100",
+    "- strategy: concise investor posture toward this leadership regime",
+    "- summary: 2-3 sentences naming the leader/company and stage",
+    "- leadership_sentiment: Positive | Neutral | Negative | Mixed, based only on Yahoo management/governance news, governance risk, execution metrics, and market expectations in the data block",
+    "- management_style: one of Founder/operator, Product visionary, Financial operator, Turnaround leader, Efficiency/capital-return manager, Acquisition/consolidation leader, Governance-focused steward, Unknown/mixed; include one sentence of evidence using fundamentals and Yahoo news when available",
+    "- capital_allocation_style: one sentence on reinvestment vs buybacks/dividends/acquisitions/deleveraging using only provided data",
+    "- execution_quality: one sentence on execution using revenue growth, margins, cash flow, risk, Torchlight execution/quality, and Yahoo news if relevant",
+    "- governance_assessment: one sentence using insider ownership, officer count, governance risk fields, compensation risk, Yahoo management/governance news, and missing data",
+    "- yahoo_data_prompt: concrete prompt for collecting missing leadership fields from Yahoo Finance",
+    "- missing_yahoo_fields: array of strings",
+    "- signals: array of 4-8 objects {metric, value, signal, stage_bias}",
+    "- explanation: explain the leadership lifecycle stage using revenue growth, profitability, cash flow, balance sheet, market expectations, and leader/title context",
+    "- subsector_combo: e.g. MSFT -> Satya Nadella -> Maturity/Growth",
+    "- lifecycle_rotation: one paragraph on what would move this leadership regime to the next stage",
+    "- event_detections: array of catalysts that could change leadership lifecycle stage",
+    "",
+    "Rules: cite only values/headlines in the data block; do not invent biography, tenure, compensation, or news. No markdown fences.",
+    "",
+    "=== DATA BLOCK ===",
+    dataBlock.trim(),
+    "=== END DATA BLOCK ===",
+  ].join("\n");
+}
+
+export async function getLeadershipLifecycleAnalysis(
+  subjectLabel: string,
+  dataBlock: string,
+  maxTokens = 3200
+): Promise<IndustryLifecycleReport> {
+  const prompt = buildLeadershipLifecyclePrompt(subjectLabel, dataBlock);
+  const raw = await generateJsonCompletion(prompt, maxTokens);
+  let parsed: unknown;
+  try {
+    parsed = parseJsonWithRecovery(raw);
+  } catch {
+    throw new Error("AI returned invalid JSON for leadership lifecycle analysis.");
+  }
+  return normalizeIndustryLifecycleReport(parsed, subjectLabel);
+}
+
+function buildIndustryLifecyclePrompt(subjectLabel: string, dataBlock: string): string {
+  return [
+    "You are a lifecycle analyst. Classify where capital is likely to flow next for a selected sector/subsector or single business/instrument.",
+    "",
+    `Subject: ${subjectLabel}`,
+    "",
+    "Lifecycle framework:",
+    "- Introduction: low revenue, high uncertainty, few players, negative/low profits. Strategy: high risk/high reward.",
+    "- Growth: revenue growth > 20% and competition rising, increasing demand, new entrants, improving margins. Strategy: best stage for investing.",
+    "- Maturity: slowing growth, saturation, high competition, stable high margins/cash flows. Strategy: dividend/value/selective.",
+    "- Decline: revenue growth < 0, falling demand, disruption, consolidation. Strategy: avoid/defensive/short candidates.",
+    "",
+    "Use this classification logic as the primary rule:",
+    'if signals["revenue_growth"] > 0.2 and signals["competition"] == "rising": return "Growth"',
+    'elif signals["margin_trend"] == "stable": return "Maturity"',
+    'elif signals["revenue_growth"] < 0: return "Decline"',
+    'else: return "Introduction"',
+    "",
+    "Required data categories:",
+    "A. Growth Metrics: revenue growth, user growth when available, market size/TAM when available.",
+    "B. Profitability: gross/profit/operating margins and margin trend.",
+    "C. Competition: few players, rising entrants, or consolidation. Use selected constituent count and dispersion as proxies if direct competitor data is unavailable.",
+    "D. News + Sentiment: hype = Introduction/Growth, neutral = Maturity, negative = Decline. Use only provided sentiment/Torchlight/news context; do not invent headlines.",
+    "",
+    "For a single company/instrument, interpret this as business lifecycle analysis: revenue growth, earnings growth, margin profile, cash-flow maturity, balance-sheet scale, analyst/market demand, news/sentiment, and competitive position within its industry.",
+    "",
+    "Also write a practical Yahoo Finance data collection prompt listing missing fields to fetch next. Include revenueGrowth, earningsGrowth, grossMargins, profitMargins, operatingMargins, ebitdaMargins, marketCap, enterpriseValue, sharesOutstanding, recommendationMean, targetMeanPrice, averageVolume, industry, sector, and any missing annual revenue history needed to infer margin trend.",
+    "",
+    "Return ONLY valid JSON with these keys:",
+    "- subject_label: string",
+    "- stage: Introduction | Growth | Maturity | Decline",
+    "- confidence: integer 0-100",
+    "- strategy: concise strategy posture: aggressive, selective, defensive, avoid/short, or mixed with reason",
+    "- summary: 2-3 sentences",
+    "- yahoo_data_prompt: a concrete prompt/instruction for collecting missing Yahoo Finance fields for this segment",
+    "- missing_yahoo_fields: array of strings",
+    "- signals: array of 4-8 objects {metric, value, signal, stage_bias}",
+    "- explanation: explain why this industry is in this stage based on revenue growth, demand/news, profitability, competition, and capital investment proxies",
+    "- subsector_combo: for sector/subsector use e.g. Technology -> Semiconductors -> Growth; for a single business use e.g. AAPL -> Consumer Electronics -> Maturity",
+    "- lifecycle_rotation: one paragraph on transition risk/opportunity, especially Introduction -> Growth and Growth -> Maturity",
+    "- event_detections: array of concrete events or catalysts that could push this segment between stages",
+    "",
+    "Rules: cite only values in the data block; if user growth, TAM, or direct entrant counts are missing, say they are missing and put them in missing_yahoo_fields. Do not use markdown fences.",
+    "",
+    "=== DATA BLOCK ===",
+    dataBlock.trim(),
+    "=== END DATA BLOCK ===",
+  ].join("\n");
+}
+
+export async function getIndustryLifecycleAnalysis(
+  subjectLabel: string,
+  dataBlock: string,
+  maxTokens = 3200
+): Promise<IndustryLifecycleReport> {
+  const prompt = buildIndustryLifecyclePrompt(subjectLabel, dataBlock);
+  const raw = await generateJsonCompletion(prompt, maxTokens);
+  let parsed: unknown;
+  try {
+    parsed = parseJsonWithRecovery(raw);
+  } catch {
+    throw new Error("AI returned invalid JSON for industry lifecycle analysis.");
+  }
+  return normalizeIndustryLifecycleReport(parsed, subjectLabel);
 }
 
 /** @deprecated Use getGrowthRiskDashboard("ticker", ...) */

@@ -7,6 +7,8 @@ export type WatchlistSignalRow = {
   ticker: string;
   company?: string;
   current_price?: number | null;
+  total_assets?: number | null;
+  total_liabilities?: number | null;
   total_revenue?: number | null;
   net_income?: number | null;
   operating_cash_flow?: number | null;
@@ -75,12 +77,25 @@ function fmtPctPoints(n: number | null | undefined, digits = 2): string {
   return `${n.toFixed(digits)}%`;
 }
 
+function fmtQualityScore(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return '—';
+  return n <= 1 ? `${(n * 100).toFixed(1)} / 100` : `${n.toFixed(1)} / 100`;
+}
+
+function fmtSignedPctFrac(n: number | null | undefined, digits = 1): string {
+  if (n == null || Number.isNaN(n)) return '—';
+  const pct = n * 100;
+  const sign = pct > 0 ? '+' : '';
+  return `${sign}${pct.toFixed(digits)}%`;
+}
+
 function meanFinite(vals: number[]): number | null {
   if (!vals.length) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
 }
 
 export type WatchlistSignalBundle = {
+  overview: SignalLane;
   iv: SignalLane;
   risk: SignalLane;
   growthDrivers: SignalLane;
@@ -107,7 +122,7 @@ export function deriveWatchlistSignalAnalysis(r: WatchlistSignalRow): WatchlistS
   if (r.iv_ri != null) ivBullets.push(`IV residual income: ${fmtUsd(r.iv_ri)}.`);
   if (r.iv_multiples != null) ivBullets.push(`IV multiples: ${fmtUsd(r.iv_multiples)}.`);
   if (r.iv_quality_score != null && !Number.isNaN(r.iv_quality_score)) {
-    ivBullets.push(`IV quality score: ${r.iv_quality_score.toFixed(1)} / 100.`);
+    ivBullets.push(`IV quality score: ${fmtQualityScore(r.iv_quality_score)}.`);
   }
 
   if (upside != null && !Number.isNaN(upside)) {
@@ -173,6 +188,15 @@ export function deriveWatchlistSignalAnalysis(r: WatchlistSignalRow): WatchlistS
   if (r.net_income != null) gBullets.push(`Net income: ${fmtStmt(r.net_income)}.`);
   if (r.operating_cash_flow != null) gBullets.push(`Operating cash flow: ${fmtStmt(r.operating_cash_flow)}.`);
   if (r.free_cash_flow != null) gBullets.push(`Free cash flow: ${fmtStmt(r.free_cash_flow)}.`);
+  if (r.total_revenue != null && r.total_revenue > 0 && r.net_income != null) {
+    gBullets.push(`Net margin: ${fmtSignedPctFrac(r.net_income / r.total_revenue, 1)}.`);
+  }
+  if (r.total_revenue != null && r.total_revenue > 0 && r.free_cash_flow != null) {
+    gBullets.push(`FCF margin: ${fmtSignedPctFrac(r.free_cash_flow / r.total_revenue, 1)}.`);
+  }
+  if (r.total_assets != null && r.total_assets > 0 && r.total_liabilities != null) {
+    gBullets.push(`Liabilities / assets: ${fmtPctFrac(r.total_liabilities / r.total_assets, 1)}.`);
+  }
 
   const driverScores = [
     r.torchlight_growth,
@@ -241,7 +265,42 @@ export function deriveWatchlistSignalAnalysis(r: WatchlistSignalRow): WatchlistS
     ctrHeadline = 'CTR: blended return profile is mixed or modest — compare price vs cash legs below.';
   }
 
+  const scoreParts: number[] = [];
+  if (upside != null && !Number.isNaN(upside)) scoreParts.push(Math.max(0, Math.min(100, 50 + upside)));
+  if (r.torchlight_score != null && !Number.isNaN(r.torchlight_score)) scoreParts.push(r.torchlight_score);
+  if (rs != null && !Number.isNaN(rs)) scoreParts.push(rs);
+  if (ann != null && !Number.isNaN(ann)) scoreParts.push(Math.max(0, Math.min(100, 50 + ann * 100)));
+  const composite = meanFinite(scoreParts);
+  const hasPositiveCash = (r.free_cash_flow ?? 0) > 0 || (r.operating_cash_flow ?? 0) > 0;
+  const overviewBullets: string[] = [];
+  if (composite != null) overviewBullets.push(`Composite signal read: ${composite.toFixed(1)} / 100 from populated IV, Torchlight, risk, and CTR fields.`);
+  if (upside != null) overviewBullets.push(`Value setup: ${fmtPctPoints(upside, 1)} model upside to IV ensemble.`);
+  if (r.torchlight_score != null) overviewBullets.push(`Torchlight rank signal: ${r.torchlight_score.toFixed(1)} / 100.`);
+  if (rs != null) overviewBullets.push(`Risk quality: ${rs.toFixed(1)} / 100.`);
+  if (ann != null) overviewBullets.push(`Recent annualized CTR: ${fmtSignedPctFrac(ann, 1)}.`);
+  if (hasPositiveCash) overviewBullets.push('Fundamental support: positive earnings/cash-flow fields are present in the snapshot.');
+
+  let posture = 'Balanced / watchlist candidate';
+  if (
+    (upside ?? 0) >= 12 &&
+    (r.torchlight_score ?? 0) >= 60 &&
+    (rs ?? 0) >= 45 &&
+    (ann == null || ann > -0.05)
+  ) {
+    posture = 'Constructive / high-priority candidate';
+  } else if ((upside ?? 0) >= 10 && hasPositiveCash && (rs == null || rs >= 35)) {
+    posture = 'Constructive value candidate, risk-check required';
+  } else if ((rs != null && rs < 32) || (ann != null && ann < -0.15)) {
+    posture = 'Speculative / risk-first review';
+  } else if ((upside ?? 0) <= -8) {
+    posture = 'Valuation caution / low-priority candidate';
+  }
+
+  const company = r.company ? `${r.company} ` : '';
+  const overviewHeadline = `${r.ticker} — ${company}${posture}.`;
+
   return {
+    overview: { headline: overviewHeadline, bullets: overviewBullets.slice(0, 8) },
     iv: { headline: ivHeadline, bullets: ivBullets.slice(0, 8) },
     risk: { headline: riskHeadline, bullets: riskBullets.slice(0, 10) },
     growthDrivers: { headline: growthHeadline, bullets: gBullets.slice(0, 16) },

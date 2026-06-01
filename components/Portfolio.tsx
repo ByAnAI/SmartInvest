@@ -24,6 +24,7 @@ import {
 import { getFinnhubToken } from '../services/tradingQuotes';
 import { watchlistUserVisibleLabel } from '../utils/watchlistDisplay';
 import { isSp500OnlyMode } from '../utils/sp500OnlyMode';
+import PortfolioNewsSentimentPanel from './PortfolioNewsSentimentPanel';
 
 const PORTFOLIO_REFRESH_MS = 300_000; // 5 minutes
 
@@ -202,6 +203,16 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = tru
   const [simState, setSimState] = useState<MarketSimulationState>(() =>
     loadMarketSimulationState(undefined)
   );
+
+  const equityHoldings = useMemo(
+    () => mergeVaultAndSimEquities(items, simState.positions),
+    [items, simState.positions],
+  );
+  const equitySymbols = useMemo(
+    () => equityHoldings.map((h) => h.symbol.toUpperCase()),
+    [equityHoldings],
+  );
+
   /** Live marks for non-equity sim positions (crypto/forex/metal) — refreshed with vault totals. */
   const [simMarksForKey, setSimMarksForKey] = useState<Record<string, number | undefined>>({});
   const [vaultSellTarget, setVaultSellTarget] = useState<PortfolioItem | null>(null);
@@ -720,7 +731,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = tru
   };
 
   const portfolioHealth = useMemo(() => {
-    const mergedHoldings = mergeVaultAndSimEquities(items, simState.positions);
+    const mergedHoldings = equityHoldings;
 
     const VALUE_EPS = 1e-6;
     const PL_EPS = 0.005;
@@ -833,7 +844,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = tru
       signalPoolCount: signalPool.length,
       usedSignalPoolForAvg: useSignalPool,
     };
-  }, [items, simState.positions, marketPrices, latestMetricsBySymbol]);
+  }, [equityHoldings, marketPrices, latestMetricsBySymbol]);
 
   if (loading) return (
     <div className="flex flex-col items-center justify-center py-40 animate-pulse">
@@ -1066,6 +1077,7 @@ const Portfolio: React.FC<PortfolioProps> = ({ userId, paperTradingAllowed = tru
             </p>
           </div>
         </div>
+        <PortfolioNewsSentimentPanel equitySymbols={equitySymbols} />
         <div className="overflow-x-auto border border-slate-100 rounded-xl">
           <table className="w-full text-xs min-w-[1280px]">
             <thead className="bg-slate-50">

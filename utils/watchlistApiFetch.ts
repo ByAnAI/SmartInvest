@@ -3,7 +3,7 @@ import type { DailyWatchlistItem } from '../types';
 /**
  * Watchlist FastAPI base URL.
  * - In dev/preview, default is same-origin `/watchlist-api` (Vite proxies to 127.0.0.1:8000) so LAN / other devices work.
- * - `VITE_WATCHLIST_API_URL` pointing at localhost:8000 is ignored in dev unless `VITE_WATCHLIST_API_DIRECT=true`.
+ * - `VITE_WATCHLIST_API_URL` pointing at localhost/127.0.0.1 (any port) uses `/watchlist-api` in dev unless `VITE_WATCHLIST_API_DIRECT=true`.
  * - Set `VITE_WATCHLIST_API_URL` to a non-local URL to use a hosted API during dev.
  * - Production builds default to http://127.0.0.1:8000 unless you set the env var.
  */
@@ -13,12 +13,11 @@ function useViteWatchlistProxy(): boolean {
   return false;
 }
 
-function isLocalhostPort8000(urlStr: string): boolean {
+/** True when env points at a loopback Watchlist API (any port — matches WATCHLIST_API_PORT in Vite proxy). */
+function isLocalWatchlistApiUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname;
-    if (host !== 'localhost' && host !== '127.0.0.1') return false;
-    return !u.port || u.port === '8000';
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
   } catch {
     return false;
   }
@@ -30,7 +29,7 @@ export function getDefaultWatchlistApiBase(): string {
 
   if (useViteWatchlistProxy()) {
     if (fromEnv && direct) return fromEnv;
-    if (fromEnv && !isLocalhostPort8000(fromEnv)) return fromEnv;
+    if (fromEnv && !isLocalWatchlistApiUrl(fromEnv)) return fromEnv;
     return '/watchlist-api';
   }
 
@@ -44,6 +43,22 @@ function errorMessage(err: unknown): string {
     return (err as { message: string }).message;
   }
   return err != null ? String(err) : 'Unknown error';
+}
+
+/** User-facing message when fetch to the Watchlist API fails (network, proxy, wrong port). */
+export function formatWatchlistApiFetchError(err: unknown, url?: string): string {
+  const msg = errorMessage(err);
+  if (/Watchlist API error 503/i.test(msg) || /not running on port/i.test(msg)) {
+    return (
+      'Watchlist API is not running. Run npm run watchlist-api:setup once, then npm run dev:all ' +
+      '(or npm run watchlist-api in another terminal). If port 8000 is busy, set WATCHLIST_API_PORT in .env and restart npm run dev.'
+    );
+  }
+  if (isNetworkFailure(err)) {
+    const target = url ? ` (${url})` : '';
+    return `Cannot reach the Watchlist API${target}. Run npm run dev:all or npm run watchlist-api. Check: curl http://127.0.0.1:8000/api/health (or your WATCHLIST_API_PORT).`;
+  }
+  return msg || 'Request failed.';
 }
 
 function isNetworkFailure(err: unknown): boolean {
@@ -121,6 +136,10 @@ export async function readWatchlistJson<T = unknown>(res: Response): Promise<T> 
     if (/^internal server error$/i.test(suffix.trim()) && (res.status === 500 || res.status === 502)) {
       suffix =
         'Cannot reach the Watchlist API on port 8000. Run npm run dev:all (frontend + API together), or npm run watchlist-api in a second terminal — then curl http://127.0.0.1:8000/api/health';
+    }
+    if (/invalid http request received/i.test(suffix)) {
+      suffix =
+        'Vite proxy sent a bad request to the Watchlist API. Check .env: WATCHLIST_API_PORT must be digits only (e.g. 8001), not a shell command on the same line. Restart npm run dev after fixing .env, then curl http://127.0.0.1:8001/api/health';
     }
     throw new Error(`Watchlist API error ${res.status}: ${suffix}`);
   }

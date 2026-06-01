@@ -1,7 +1,7 @@
 import { fetchWatchlistApi, getDefaultWatchlistApiBase, readWatchlistJson } from '../utils/watchlistApiFetch';
 
 export type MacroReportCachePayload = {
-  report_date: string;
+  report_date: string | null;
   found: boolean;
   content: string | null;
   path?: string | null;
@@ -25,6 +25,12 @@ export async function fetchMacroReportForDate(
     base,
     `/api/macro/report?report_date=${encodeURIComponent(reportDate)}`
   );
+  return readWatchlistJson<MacroReportCachePayload>(res);
+}
+
+export async function fetchLatestMacroReport(apiBase?: string): Promise<MacroReportCachePayload> {
+  const base = apiBase ?? getDefaultWatchlistApiBase();
+  const res = await fetchWatchlistApi(base, '/api/macro/report?latest=1');
   return readWatchlistJson<MacroReportCachePayload>(res);
 }
 

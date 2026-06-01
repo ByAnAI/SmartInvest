@@ -3,9 +3,18 @@ import { SP500_TICKERS } from './SP500Data';
 import { NASDAQ_TICKERS } from './NasdaqData';
 import { isSp500OnlyMode } from '../utils/sp500OnlyMode';
 import { FOREX_TICKERS } from './ForexData';
-import { getForexSentinelInsight, getGrowthRiskDashboard, getStockInsight, getTickerWatchlistConditionBrief } from '../services/geminiService';
+import {
+  getForexSentinelInsight,
+  getGrowthRiskDashboard,
+  getIndustryLifecycleAnalysis,
+  getLeadershipLifecycleAnalysis,
+  getStockInsight,
+  getTickerWatchlistConditionBrief,
+} from '../services/geminiService';
 import { fetchForexSentinelContext } from '../services/forexSentinel';
 import { fetchFinnhubCompanyNewsBundle, promptBlockFromBundle } from '../services/finnhubCompanyNews';
+import { fetchMacroReportForDate, localReportDateKey, stripMacroReportFileHeader } from '../services/macroReportCache';
+import { fetchPortfolioNewsSentiment, formatAvSentiment } from '../services/portfolioNewsSentiment';
 import { buildWatchlistLabel, getAllDailyWatchlists, getCompanyFundamentalsByTickers, getDailyWatchlistItems, getPortfolio } from '../services/supabaseService';
 import { formatWatchlistCreatedAt, watchlistSelectOptionText } from '../utils/watchlistDisplay';
 import { snapshotToDailyWatchlistItems } from '../utils/personalWatchlistStorage';
@@ -27,6 +36,7 @@ import {
   type GrowthRiskDashboardItem,
   type GrowthRiskDashboardReport,
   type GrowthRiskImpactLevel,
+  type IndustryLifecycleReport,
   type TickerWatchlistConditionBrief,
 } from '../types';
 import { deriveWatchlistSignalAnalysis, type WatchlistSignalBundle } from '../utils/watchlistSignalAnalysis';
@@ -38,6 +48,32 @@ type WatchlistRow = {
   industry?: string;
   location?: string;
   current_price?: number | null;
+  revenue_growth?: number | null;
+  earnings_growth?: number | null;
+  gross_margins?: number | null;
+  profit_margins?: number | null;
+  operating_margins?: number | null;
+  ebitda_margins?: number | null;
+  market_cap?: number | null;
+  enterprise_value?: number | null;
+  shares_outstanding?: number | null;
+  average_volume?: number | null;
+  recommendation_mean?: number | null;
+  target_mean_price?: number | null;
+  leader_name?: string | null;
+  leader_title?: string | null;
+  leader_total_pay?: number | null;
+  leader_year_born?: number | null;
+  officer_count?: number | null;
+  held_percent_insiders?: number | null;
+  held_percent_institutions?: number | null;
+  audit_risk?: number | null;
+  board_risk?: number | null;
+  compensation_risk?: number | null;
+  shareholder_rights_risk?: number | null;
+  overall_risk?: number | null;
+  yahoo_recent_news?: Array<{ title?: string; publisher?: string; published?: unknown; link?: string }> | null;
+  yahoo_management_news?: Array<{ title?: string; publisher?: string; published?: unknown; link?: string }> | null;
   total_assets?: number | null;
   total_liabilities?: number | null;
   total_revenue?: number | null;
@@ -80,6 +116,79 @@ type WatchlistRow = {
   risk_summary_score?: number | null;
 };
 
+type GrowthRiskReportJob = {
+  status: 'pending' | 'done' | 'error';
+  promise: Promise<GrowthRiskDashboardReport>;
+  report?: GrowthRiskDashboardReport;
+  error?: string;
+  startedAt: number;
+};
+
+const growthRiskReportJobs = new Map<string, GrowthRiskReportJob>();
+const growthRiskReportListeners = new Set<() => void>();
+
+const aiAnalysisUiMemory: {
+  symbol?: string;
+  selectedWatchlistId?: string;
+  watchlistSnapshotSource?: 'team' | 'library';
+  marketUniverse?: AiMarketUniverse;
+  insightTarget?: InsightTarget;
+  selectedRowTicker?: string;
+  selectedSector?: string;
+  selectedSubsector?: string;
+  selectedCompanyTicker?: string;
+  minRiskSummary?: string;
+  rankBy?: 'torchlight' | 'risk_summary';
+  insight?: InsightResponse | null;
+  insightReportMeta?: MarketInsightReportMeta | null;
+  insightScope?: 'Ticker' | 'Sector';
+  growthRiskDashboard?: GrowthRiskDashboardReport | null;
+  growthRiskDashboardError?: string;
+  businessLifecycleReport?: IndustryLifecycleReport | null;
+  industryLifecycleReport?: IndustryLifecycleReport | null;
+  industryLifecycleReportKind?: 'industry' | 'business' | 'leadership';
+  industryLifecycleError?: string;
+} = {};
+
+function notifyGrowthRiskReportListeners(): void {
+  growthRiskReportListeners.forEach((listener) => listener());
+}
+
+function subscribeGrowthRiskReportJobs(listener: () => void): () => void {
+  growthRiskReportListeners.add(listener);
+  return () => {
+    growthRiskReportListeners.delete(listener);
+  };
+}
+
+function startGrowthRiskReportJob(
+  key: string,
+  run: () => Promise<GrowthRiskDashboardReport>
+): GrowthRiskReportJob {
+  const existing = growthRiskReportJobs.get(key);
+  if (existing) return existing;
+
+  const job: GrowthRiskReportJob = {
+    status: 'pending',
+    promise: run(),
+    startedAt: Date.now(),
+  };
+  growthRiskReportJobs.set(key, job);
+  job.promise
+    .then((report) => {
+      job.status = 'done';
+      job.report = report;
+      notifyGrowthRiskReportListeners();
+    })
+    .catch((err: unknown) => {
+      job.status = 'error';
+      job.error = err instanceof Error ? err.message : 'Could not generate growth & risk report.';
+      notifyGrowthRiskReportListeners();
+    });
+  notifyGrowthRiskReportListeners();
+  return job;
+}
+
 function insightConditionDisplayLabel(sentiment: InsightResponse['sentiment']): string {
   return sentiment === 'Neutral' ? 'Hold' : sentiment;
 }
@@ -116,6 +225,44 @@ function growthRiskHeatmapCellClass(level: GrowthRiskImpactLevel): string {
   return 'bg-slate-200 text-slate-800 border-slate-300';
 }
 
+const LIFECYCLE_STAGES: Array<IndustryLifecycleReport['stage']> = ['Introduction', 'Growth', 'Maturity', 'Decline'];
+
+function lifecycleStageClass(stage: IndustryLifecycleReport['stage']): string {
+  if (stage === 'Growth') return 'bg-emerald-600 text-white border-emerald-700';
+  if (stage === 'Maturity') return 'bg-blue-600 text-white border-blue-700';
+  if (stage === 'Decline') return 'bg-rose-600 text-white border-rose-700';
+  return 'bg-amber-400 text-amber-950 border-amber-500';
+}
+
+function lifecycleStageMutedClass(stage: IndustryLifecycleReport['stage']): string {
+  if (stage === 'Growth') return 'bg-emerald-50 text-emerald-800 border-emerald-200';
+  if (stage === 'Maturity') return 'bg-blue-50 text-blue-800 border-blue-200';
+  if (stage === 'Decline') return 'bg-rose-50 text-rose-800 border-rose-200';
+  return 'bg-amber-50 text-amber-800 border-amber-200';
+}
+
+function lifecycleStagePosition(stage: IndustryLifecycleReport['stage']): number {
+  const idx = Math.max(0, LIFECYCLE_STAGES.indexOf(stage));
+  return Math.round((idx / Math.max(1, LIFECYCLE_STAGES.length - 1)) * 100);
+}
+
+function lifecycleSignalBiasCounts(report: IndustryLifecycleReport): Array<{
+  stage: IndustryLifecycleReport['stage'];
+  count: number;
+}> {
+  return LIFECYCLE_STAGES.map((stage) => ({
+    stage,
+    count: report.signals.filter((signal) => signal.stageBias === stage).length,
+  }));
+}
+
+function leadershipSentimentClass(sentiment: IndustryLifecycleReport['leadershipSentiment']): string {
+  if (sentiment === 'Positive') return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+  if (sentiment === 'Negative') return 'bg-rose-100 text-rose-800 border-rose-200';
+  if (sentiment === 'Mixed') return 'bg-amber-100 text-amber-900 border-amber-200';
+  return 'bg-slate-100 text-slate-700 border-slate-200';
+}
+
 function groupGrowthRiskByCategory(items: GrowthRiskDashboardItem[]): [string, GrowthRiskDashboardItem[]][] {
   const m = new Map<string, GrowthRiskDashboardItem[]>();
   for (const it of items) {
@@ -126,6 +273,115 @@ function groupGrowthRiskByCategory(items: GrowthRiskDashboardItem[]): [string, G
   return [...m.entries()]
     .map(([k, arr]) => [k, [...arr].sort((a, b) => b.score - a.score)] as [string, GrowthRiskDashboardItem[]])
     .sort(([a], [b]) => a.localeCompare(b));
+}
+
+function tickerIn(ticker: string, values: string[]): boolean {
+  return values.includes(ticker.toUpperCase());
+}
+
+function inferredSubsector(row: WatchlistRow): string {
+  const explicit = (row.industry || '').trim();
+  if (explicit) return explicit;
+  const sector = (row.sector || '').trim();
+  const sectorKey = sector.toLowerCase();
+  if (!sectorKey) return '';
+  const ticker = row.ticker.toUpperCase();
+  const text = `${row.company || ''} ${ticker}`.toLowerCase();
+
+  if (sectorKey.includes('technology')) {
+    if (tickerIn(ticker, ['NVDA', 'AMD', 'INTC', 'AVGO', 'QCOM', 'TXN', 'ADI', 'MU', 'MCHP', 'MPWR', 'ON', 'NXPI', 'KLAC', 'LRCX', 'AMAT', 'TER', 'SWKS', 'QRVO']) || /semiconductor|microchip|broadcom|nvidia|amd|intel|analog devices|texas instruments|qualcomm/.test(text)) {
+      return 'Semiconductors & Equipment';
+    }
+    if (tickerIn(ticker, ['MSFT', 'ORCL', 'ADBE', 'CRM', 'INTU', 'NOW', 'PANW', 'SNPS', 'CDNS', 'ADSK', 'ANSS', 'FICO', 'PLTR', 'FTNT', 'TYL', 'PTC']) || /software|cloud|salesforce|adobe|autodesk|synopsys|cadence|serviceNow|palantir|fortinet/i.test(text)) {
+      return 'Software & Cloud';
+    }
+    if (tickerIn(ticker, ['ACN', 'IBM', 'FI', 'FIS', 'GPN', 'ADP', 'PAYX', 'CTSH', 'EPAM', 'IT', 'LDOS', 'CDW']) || /consulting|services|payments|payroll|data processing|fiserv|global payments|cognizant|accenture|gartner/.test(text)) {
+      return 'IT Services & Payments';
+    }
+    if (tickerIn(ticker, ['AAPL', 'HPQ', 'DELL', 'STX', 'WDC', 'NTAP', 'CSCO', 'ANET', 'MSI', 'GLW', 'TEL', 'KEYS', 'HPE', 'JNPR']) || /apple|hardware|storage|network|communications|electronics|motorola|cisco|arista/.test(text)) {
+      return 'Hardware, Devices & Networking';
+    }
+    return 'Technology - Other';
+  }
+
+  if (sectorKey.includes('health')) {
+    if (/pharma|therapeutics|medicine|drug|bristol|pfizer|merck|eli lilly|abbvie|biogen|regeneron|moderna|gilead|vertex/.test(text)) return 'Pharma & Biotechnology';
+    if (/device|surgical|medtronic|stryker|boston scientific|intuitive|becton|edwards|zimmer|resmed/.test(text)) return 'Medical Devices';
+    if (/health|managed care|insurance|cigna|humana|unitedhealth|centene|mckesson|cardinal|cvs|elevance/.test(text)) return 'Healthcare Services & Managed Care';
+    if (/laborator|diagnostic|thermo|danaher|idexx|illumina|quest|agilent/.test(text)) return 'Life Sciences & Diagnostics';
+    return 'Healthcare - Other';
+  }
+
+  if (sectorKey.includes('financial')) {
+    if (/bank|bancorp|financial|trust|jpmorgan|citigroup|wells fargo|goldman|morgan stanley/.test(text)) return 'Banks & Capital Markets';
+    if (/insurance|assurant|aig|allstate|chubb|progressive|metlife|aflac|travelers|hartford/.test(text)) return 'Insurance';
+    if (/visa|mastercard|paypal|payment|fiserv|american express|discover/.test(text)) return 'Payments & Credit Services';
+    if (/exchange|marketaxess|cboe|nasdaq|factset|msci|s&p global|moody/.test(text)) return 'Exchanges, Data & Ratings';
+    return 'Financial Services - Other';
+  }
+
+  if (sectorKey.includes('communication')) {
+    if (/alphabet|meta|netflix|interactive|match|take-two|electronic arts/.test(text)) return 'Interactive Media & Entertainment';
+    if (/telecom|communications|verizon|at&t|t-mobile/.test(text)) return 'Telecom Services';
+    if (/media|warner|disney|comcast|charter|fox|paramount/.test(text)) return 'Media & Cable';
+    return 'Communication Services - Other';
+  }
+
+  if (sectorKey.includes('consumer cyclical')) {
+    if (/auto|tesla|ford|general motors|carmax|oreilly|autozone/.test(text)) return 'Autos & Auto Retail';
+    if (/restaurant|mcdonald|starbucks|chipotle|yum|domino/.test(text)) return 'Restaurants';
+    if (/apparel|nike|lululemon|tapestry|ralph lauren|retail|amazon|target|best buy|etsy|ebay/.test(text)) return 'Retail & Apparel';
+    if (/hotel|booking|travel|carnival|royal caribbean|airbnb|expedia|marriott|hilton/.test(text)) return 'Travel & Leisure';
+    return 'Consumer Cyclical - Other';
+  }
+
+  if (sectorKey.includes('consumer defensive')) {
+    if (/food|beverage|coca|pepsi|mondelez|hershey|kraft|general mills|conagra|tyson/.test(text)) return 'Food & Beverage';
+    if (/costco|walmart|kroger|dollar|retail/.test(text)) return 'Defensive Retail';
+    if (/household|procter|colgate|clorox|kimberly|estee/.test(text)) return 'Household & Personal Products';
+    if (/tobacco|altria|philip morris/.test(text)) return 'Tobacco';
+    return 'Consumer Defensive - Other';
+  }
+
+  if (sectorKey.includes('industrial')) {
+    if (/aerospace|defense|boeing|lockheed|northrop|raytheon|general dynamics|transdigm/.test(text)) return 'Aerospace & Defense';
+    if (/rail|airline|transport|logistics|fedex|ups|union pacific|csx|norfolk/.test(text)) return 'Transportation & Logistics';
+    if (/machinery|caterpillar|deere|cummins|paccar|ingersoll|emerson|rockwell/.test(text)) return 'Machinery & Automation';
+    if (/waste|rental|services|verisk|equifax|jacobs|cintas|robert half/.test(text)) return 'Industrial Services';
+    return 'Industrials - Other';
+  }
+
+  if (sectorKey.includes('energy')) {
+    if (/exploration|resources|eog|diamondback|conoco|devon|marathon|hess/.test(text)) return 'Oil & Gas E&P';
+    if (/exxon|chevron|integrated/.test(text)) return 'Integrated Oil & Gas';
+    if (/pipeline|midstream|williams|oneok|targa|kindermorgan/.test(text)) return 'Midstream & Infrastructure';
+    if (/service|slb|halliburton|baker hughes/.test(text)) return 'Oilfield Services';
+    return 'Energy - Other';
+  }
+
+  if (sectorKey.includes('real estate')) {
+    if (/data center|equinix|digital realty/.test(text)) return 'Data Center REITs';
+    if (/industrial|prologis/.test(text)) return 'Industrial REITs';
+    if (/residential|apartment|equity residential|avalonbay|invitation/.test(text)) return 'Residential REITs';
+    if (/retail|realty income|simon|kimco|regency/.test(text)) return 'Retail REITs';
+    return 'Real Estate - Other';
+  }
+
+  if (sectorKey.includes('utilit')) {
+    if (/water|american water/.test(text)) return 'Water Utilities';
+    if (/gas|nisource|atmos/.test(text)) return 'Gas Utilities';
+    if (/renewable|nextera|aes/.test(text)) return 'Power & Renewables';
+    return 'Electric & Multi-Utilities';
+  }
+
+  if (sectorKey.includes('material') || sectorKey.includes('basic')) {
+    if (/chemical|dow|dupont|lyondell|celanese|corteva|mosaic|cf industries/.test(text)) return 'Chemicals & Agriculture Inputs';
+    if (/packaging|container|ball|avery|westrock|international paper/.test(text)) return 'Packaging & Paper';
+    if (/steel|alcoa|copper|mining|minerals|newmont|freeport/.test(text)) return 'Metals & Mining';
+    return 'Materials - Other';
+  }
+
+  return `${sector} - Other`;
 }
 
 function mapDailyItemsToWatchlistRows(savedItems: DailyWatchlistItem[]): WatchlistRow[] {
@@ -177,6 +433,74 @@ function mapDailyItemsToWatchlistRows(savedItems: DailyWatchlistItem[]): Watchli
     risk_beta: r.risk_beta ?? null,
     risk_summary_score: r.risk_summary_score ?? null,
   }));
+}
+
+const WATCHLIST_METRIC_KEYS: Array<keyof WatchlistRow> = [
+  'current_price',
+  'total_assets',
+  'total_liabilities',
+  'total_revenue',
+  'net_income',
+  'operating_cash_flow',
+  'free_cash_flow',
+  'iv_dcf',
+  'iv_ri',
+  'iv_multiples',
+  'iv_quality_score',
+  'iv_ensemble',
+  'iv_upside_pct',
+  'torchlight_score',
+  'torchlight_momentum',
+  'torchlight_valuation_edge',
+  'torchlight_quality',
+  'torchlight_growth',
+  'torchlight_sentiment',
+  'torchlight_macro_fit',
+  'torchlight_execution_feasibility',
+  'torchlight_risk_adjusted_alpha',
+  'ctr_total_return',
+  'ctr_price_return',
+  'ctr_cash_return',
+  'ctr_annualized',
+  'torchlight_ctr_score',
+  'risk_volatility_annual',
+  'risk_daily_return_mean',
+  'risk_volatility_daily',
+  'risk_sharpe',
+  'risk_sortino',
+  'risk_max_drawdown',
+  'risk_var_95_hist',
+  'risk_var_99_hist',
+  'risk_var_95_param',
+  'risk_var_99_param',
+  'risk_cvar_95',
+  'risk_beta',
+  'risk_summary_score',
+];
+
+function watchlistMetricCount(row: WatchlistRow): number {
+  return WATCHLIST_METRIC_KEYS.reduce((count, key) => {
+    const value = row[key];
+    return value != null && value !== '' && !(typeof value === 'number' && Number.isNaN(value)) ? count + 1 : count;
+  }, 0);
+}
+
+function mergeMissingWatchlistMetrics(row: WatchlistRow, fallback: WatchlistRow | undefined): WatchlistRow {
+  if (!fallback || watchlistMetricCount(fallback) <= watchlistMetricCount(row)) return row;
+  const merged: WatchlistRow = { ...row };
+  for (const key of WATCHLIST_METRIC_KEYS) {
+    if (merged[key] == null || merged[key] === '') {
+      (merged as Record<string, unknown>)[key] = fallback[key];
+    }
+  }
+  if (!merged.company && fallback.company) merged.company = fallback.company;
+  if (!merged.sector && fallback.sector) merged.sector = fallback.sector;
+  if (!merged.industry && fallback.industry) merged.industry = fallback.industry;
+  if (!merged.location && fallback.location) merged.location = fallback.location;
+  if (!merged.torchlight_rank_factors && fallback.torchlight_rank_factors) {
+    merged.torchlight_rank_factors = fallback.torchlight_rank_factors;
+  }
+  return merged;
 }
 
 function formatStatementNum(val: number | null | undefined): string {
@@ -274,18 +598,18 @@ function escapeCsvCell(v: unknown): string {
   return s;
 }
 
-function downloadTopLowInsightsCsv(
-  top: Array<{ row: WatchlistRow; score: number }>,
-  low: Array<{ row: WatchlistRow; score: number }>,
-  opts: { includeTop: boolean; includeLow: boolean }
+function downloadMarketInsightsCsv(
+  ranked: Array<{ row: WatchlistRow; score: number }>,
+  scopeLabel: string
 ): void {
   const cols = [
-    'bucket',
+    'scope',
     'rank',
     'composite_score',
     'ticker',
     'company',
     'sector',
+    'subsector',
     'iv_ensemble',
     'current_price',
     'iv_upside_pct',
@@ -302,15 +626,16 @@ function downloadTopLowInsightsCsv(
     'ctr_annualized',
   ] as const;
   const header = cols.map((c) => escapeCsvCell(c)).join(',');
-  const line = (bucket: string, rank: number, x: { row: WatchlistRow; score: number }) => {
+  const line = (rank: number, x: { row: WatchlistRow; score: number }) => {
     const r = x.row;
     const vals: Record<string, unknown> = {
-      bucket,
+      scope: scopeLabel,
       rank,
       composite_score: x.score,
       ticker: r.ticker,
       company: r.company ?? '',
       sector: r.sector ?? '',
+      subsector: inferredSubsector(r),
       iv_ensemble: r.iv_ensemble ?? '',
       current_price: r.current_price ?? '',
       iv_upside_pct: r.iv_upside_pct ?? '',
@@ -329,14 +654,13 @@ function downloadTopLowInsightsCsv(
     return cols.map((c) => escapeCsvCell(vals[c])).join(',');
   };
   const lines: string[] = [header];
-  if (opts.includeTop) top.forEach((x, i) => lines.push(line('top_10', i + 1, x)));
-  if (opts.includeLow) low.forEach((x, i) => lines.push(line('low_10', i + 1, x)));
+  ranked.forEach((x, i) => lines.push(line(i + 1, x)));
   if (lines.length <= 1) return;
   const csv = `\uFEFF${lines.join('\r\n')}`;
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `watchlist-insights-top-low-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `watchlist-insights-ranked-${new Date().toISOString().slice(0, 10)}.csv`;
   a.rel = 'noopener';
   document.body.appendChild(a);
   a.click();
@@ -364,7 +688,7 @@ function buildWatchlistQuantitativeDataBlock(r: WatchlistRow): string {
 
   L('Identifier', `${r.ticker} / ${r.company || 'N/A'}`);
   L('Sector', r.sector || 'N/A');
-  L('Industry', r.industry || 'N/A');
+  L('Industry/Subsector', inferredSubsector(r) || 'N/A');
   L('Location', r.location || 'N/A');
   L('Current price (mark)', $n(r.current_price));
 
@@ -419,6 +743,97 @@ function buildWatchlistQuantitativeDataBlock(r: WatchlistRow): string {
   L('Free cash flow', formatStatementNum(r.free_cash_flow));
 
   return lines.join('\n');
+}
+
+function truncateContextBlock(text: string, maxChars: number): string {
+  const clean = text.trim();
+  if (clean.length <= maxChars) return clean;
+  return `${clean.slice(0, maxChars).trimEnd()}\n[truncated]`;
+}
+
+async function buildTickerGrowthRiskContextBlock(row: WatchlistRow, apiBase: string): Promise<string> {
+  const blocks: string[] = [
+    '=== PRIMARY WATCHLIST VALUES (highest priority; cite these numbers first) ===',
+    buildWatchlistQuantitativeDataBlock(row),
+    '=== END PRIMARY WATCHLIST VALUES ===',
+  ];
+  const ticker = row.ticker.toUpperCase();
+
+  try {
+    const sentiment = await fetchPortfolioNewsSentiment([ticker], apiBase);
+    const position = sentiment.positions.find((p) => p.symbol.toUpperCase() === ticker);
+    blocks.push(
+      [
+        '=== NEWS SENTIMENT CONTEXT (secondary; do not override watchlist values) ===',
+        `Source: ${sentiment.source || 'news sentiment API'}`,
+        position
+          ? `Ticker sentiment: ${position.sentiment_label} (${formatAvSentiment(position.average_sentiment)}), articles: ${position.article_count}`
+          : 'Ticker sentiment: no ticker-specific sentiment row returned.',
+        ...(position?.articles ?? []).slice(0, 5).map((a, i) => {
+          const title = a.title || 'Untitled';
+          const source = a.source ? `, ${a.source}` : '';
+          const label = a.sentiment_label ? `, sentiment ${a.sentiment_label}` : '';
+          const score = a.sentiment != null ? ` (${formatAvSentiment(a.sentiment)})` : '';
+          return `${i + 1}. ${title}${source}${label}${score}`;
+        }),
+        '=== END NEWS SENTIMENT CONTEXT ===',
+      ].join('\n')
+    );
+  } catch (e: unknown) {
+    blocks.push(
+      [
+        '=== NEWS SENTIMENT CONTEXT (secondary) ===',
+        `Unavailable: ${e instanceof Error ? e.message : String(e)}`,
+        '=== END NEWS SENTIMENT CONTEXT ===',
+      ].join('\n')
+    );
+  }
+
+  try {
+    const todayNewsBundle = await fetchFinnhubCompanyNewsBundle(ticker, {
+      daysBack: 0,
+      maxArticles: 3,
+    });
+    blocks.push(
+      [
+        '=== TODAY TICKER NEWS (secondary; Finnhub today only) ===',
+        promptBlockFromBundle(todayNewsBundle),
+        '=== END TODAY TICKER NEWS ===',
+      ].join('\n')
+    );
+  } catch (e: unknown) {
+    blocks.push(
+      [
+        '=== TODAY TICKER NEWS (secondary) ===',
+        `Unavailable: ${e instanceof Error ? e.message : String(e)}`,
+        '=== END TODAY TICKER NEWS ===',
+      ].join('\n')
+    );
+  }
+
+  try {
+    const day = localReportDateKey();
+    const macro = await fetchMacroReportForDate(day, apiBase);
+    blocks.push(
+      [
+        '=== FRED MACRO REPORT CONTEXT (secondary; use for macro category only) ===',
+        macro.found && macro.content
+          ? `Report date: ${macro.report_date}\n${truncateContextBlock(stripMacroReportFileHeader(macro.content), 5000)}`
+          : `No saved FRED macro report found for ${day}.`,
+        '=== END FRED MACRO REPORT CONTEXT ===',
+      ].join('\n')
+    );
+  } catch (e: unknown) {
+    blocks.push(
+      [
+        '=== FRED MACRO REPORT CONTEXT (secondary) ===',
+        `Unavailable: ${e instanceof Error ? e.message : String(e)}`,
+        '=== END FRED MACRO REPORT CONTEXT ===',
+      ].join('\n')
+    );
+  }
+
+  return blocks.join('\n\n');
 }
 
 /** Mean of a numeric column; only rows with finite values count. */
@@ -529,14 +944,278 @@ function buildSectorAggregateMetricsBlock(sector: string, rows: WatchlistRow[]):
   return lines.join('\n');
 }
 
+function finiteLifecycleNum(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function avgLifecycleField(rows: Array<Record<string, unknown>>, key: string): { mean: number; n: number } | null {
+  const vals = rows.map((r) => finiteLifecycleNum(r[key])).filter((v): v is number => v != null);
+  if (!vals.length) return null;
+  return { mean: vals.reduce((a, b) => a + b, 0) / vals.length, n: vals.length };
+}
+
+function pctLifecycle(v: number | null | undefined): string {
+  return v != null && Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : 'N/A';
+}
+
+function numLifecycle(v: number | null | undefined, digits = 2): string {
+  return v != null && Number.isFinite(v) ? v.toFixed(digits) : 'N/A';
+}
+
+function formatYahooNewsForPrompt(raw: unknown, label: string): string[] {
+  const rows = Array.isArray(raw) ? raw : [];
+  if (!rows.length) return [`${label}: none returned by Yahoo Finance.`];
+  return [
+    `${label}:`,
+    ...rows.slice(0, 10).map((item, i) => {
+      if (!item || typeof item !== 'object') return `${i + 1}. N/A`;
+      const r = item as Record<string, unknown>;
+      const title = String(r.title || '').trim() || 'Untitled';
+      const publisher = String(r.publisher || '').trim();
+      const published = r.published != null ? String(r.published) : '';
+      return `${i + 1}. ${title}${publisher ? ` — ${publisher}` : ''}${published ? ` (${published})` : ''}`;
+    }),
+  ];
+}
+
+function classifyLifecycleStageFromSignals(signals: {
+  revenueGrowth: number | null;
+  competition: 'rising' | 'few_players' | 'consolidating' | 'unknown';
+  marginTrend: 'improving' | 'stable' | 'falling' | 'unknown';
+}): 'Introduction' | 'Growth' | 'Maturity' | 'Decline' {
+  if (signals.revenueGrowth != null && signals.revenueGrowth > 0.2 && signals.competition === 'rising') return 'Growth';
+  if (signals.marginTrend === 'stable') return 'Maturity';
+  if (signals.revenueGrowth != null && signals.revenueGrowth < 0) return 'Decline';
+  return 'Introduction';
+}
+
+function buildIndustryLifecycleDataBlock(
+  segmentLabel: string,
+  rows: WatchlistRow[],
+  yahooRows: unknown[],
+  yahooError?: string
+): string {
+  const yahooByTicker = new Map<string, Record<string, unknown>>();
+  for (const raw of yahooRows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const obj = raw as Record<string, unknown>;
+    const ticker = String(obj.ticker || '').toUpperCase();
+    if (ticker) yahooByTicker.set(ticker, obj);
+  }
+  const merged = rows.map((row) => ({ ...row, ...(yahooByTicker.get(row.ticker.toUpperCase()) || {}) }));
+  const revenueGrowth = avgLifecycleField(merged, 'revenue_growth');
+  const earningsGrowth = avgLifecycleField(merged, 'earnings_growth');
+  const grossMargins = avgLifecycleField(merged, 'gross_margins');
+  const profitMargins = avgLifecycleField(merged, 'profit_margins');
+  const operatingMargins = avgLifecycleField(merged, 'operating_margins');
+  const ebitdaMargins = avgLifecycleField(merged, 'ebitda_margins');
+  const marketCap = avgLifecycleField(merged, 'market_cap');
+  const enterpriseValue = avgLifecycleField(merged, 'enterprise_value');
+  const recommendationMean = avgLifecycleField(merged, 'recommendation_mean');
+  const targetMeanPrice = avgLifecycleField(merged, 'target_mean_price');
+  const growthBreadth =
+    revenueGrowth && merged.length > 0
+      ? merged.filter((r) => {
+          const g = finiteLifecycleNum(r.revenue_growth);
+          return g != null && g > 0.2;
+        }).length / Math.max(1, revenueGrowth.n)
+      : null;
+  const competition =
+    rows.length <= 4 ? 'few_players' : growthBreadth != null && growthBreadth >= 0.35 ? 'rising' : 'unknown';
+  const marginTrend =
+    operatingMargins && profitMargins && revenueGrowth && Math.abs(revenueGrowth.mean) <= 0.12
+      ? 'stable'
+      : 'unknown';
+  const deterministicStage = classifyLifecycleStageFromSignals({
+    revenueGrowth: revenueGrowth?.mean ?? null,
+    competition,
+    marginTrend,
+  });
+  const topRows = [...merged]
+    .sort((a, b) => (finiteLifecycleNum(b.revenue_growth) ?? -999) - (finiteLifecycleNum(a.revenue_growth) ?? -999))
+    .slice(0, 12);
+
+  return [
+    buildSectorAggregateMetricsBlock(segmentLabel, rows),
+    '',
+    `=== YAHOO FINANCE LIFECYCLE FIELDS (${segmentLabel}) ===`,
+    `Yahoo fetch status: ${yahooRows.length > 0 ? `loaded ${yahooRows.length}/${rows.length} rows` : yahooError ? `unavailable: ${yahooError}` : 'no lifecycle rows returned'}`,
+    `Avg revenue growth: ${revenueGrowth ? `${pctLifecycle(revenueGrowth.mean)} (mean over ${revenueGrowth.n}/${rows.length})` : 'N/A'}`,
+    `Avg earnings growth: ${earningsGrowth ? `${pctLifecycle(earningsGrowth.mean)} (mean over ${earningsGrowth.n}/${rows.length})` : 'N/A'}`,
+    `Avg gross margins: ${grossMargins ? `${pctLifecycle(grossMargins.mean)} (mean over ${grossMargins.n}/${rows.length})` : 'N/A'}`,
+    `Avg profit margins: ${profitMargins ? `${pctLifecycle(profitMargins.mean)} (mean over ${profitMargins.n}/${rows.length})` : 'N/A'}`,
+    `Avg operating margins: ${operatingMargins ? `${pctLifecycle(operatingMargins.mean)} (mean over ${operatingMargins.n}/${rows.length})` : 'N/A'}`,
+    `Avg EBITDA margins: ${ebitdaMargins ? `${pctLifecycle(ebitdaMargins.mean)} (mean over ${ebitdaMargins.n}/${rows.length})` : 'N/A'}`,
+    `Avg market cap: ${marketCap ? formatStatementNum(marketCap.mean) : 'N/A'}`,
+    `Avg enterprise value: ${enterpriseValue ? formatStatementNum(enterpriseValue.mean) : 'N/A'}`,
+    `Avg recommendation mean: ${recommendationMean ? numLifecycle(recommendationMean.mean, 2) : 'N/A'}`,
+    `Avg target mean price: ${targetMeanPrice ? `$${targetMeanPrice.mean.toFixed(2)}` : 'N/A'}`,
+    `Competition proxy: ${competition} (constituents: ${rows.length}; high-growth breadth: ${growthBreadth != null ? `${(growthBreadth * 100).toFixed(1)}%` : 'N/A'})`,
+    `Margin trend proxy: ${marginTrend} (direct multi-year margin trend is not available in this payload)`,
+    `Deterministic classification from requested logic: ${deterministicStage}`,
+    'Missing direct signals: user growth, TAM/market-size growth, direct new-entrant count, consolidation/M&A count, and multi-year margin trend.',
+    '',
+    'Top rows by Yahoo revenue growth proxy:',
+    ...topRows.map((r, i) => {
+      const ticker = String(r.ticker || '').toUpperCase();
+      const company = String(r.company || r.short_name || '').trim();
+      return `${i + 1}. ${ticker}${company ? ` (${company})` : ''}: revenue_growth=${pctLifecycle(finiteLifecycleNum(r.revenue_growth))}, earnings_growth=${pctLifecycle(finiteLifecycleNum(r.earnings_growth))}, profit_margins=${pctLifecycle(finiteLifecycleNum(r.profit_margins))}, operating_margins=${pctLifecycle(finiteLifecycleNum(r.operating_margins))}, market_cap=${formatStatementNum(finiteLifecycleNum(r.market_cap))}`;
+    }),
+    '=== END YAHOO FINANCE LIFECYCLE FIELDS ===',
+  ].join('\n');
+}
+
+function buildBusinessLifecycleDataBlock(row: WatchlistRow, yahooRows: unknown[], yahooError?: string): string {
+  const yahoo = (yahooRows.find((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    return String((raw as Record<string, unknown>).ticker || '').toUpperCase() === row.ticker.toUpperCase();
+  }) || {}) as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...row, ...yahoo };
+  const revenueGrowth = finiteLifecycleNum(merged.revenue_growth);
+  const earningsGrowth = finiteLifecycleNum(merged.earnings_growth);
+  const grossMargins = finiteLifecycleNum(merged.gross_margins);
+  const profitMargins = finiteLifecycleNum(merged.profit_margins);
+  const operatingMargins = finiteLifecycleNum(merged.operating_margins);
+  const ebitdaMargins = finiteLifecycleNum(merged.ebitda_margins);
+  const marketCap = finiteLifecycleNum(merged.market_cap);
+  const enterpriseValue = finiteLifecycleNum(merged.enterprise_value);
+  const recommendationMean = finiteLifecycleNum(merged.recommendation_mean);
+  const targetMeanPrice = finiteLifecycleNum(merged.target_mean_price);
+  const fcfMargin =
+    row.free_cash_flow != null && row.total_revenue != null && row.total_revenue !== 0
+      ? row.free_cash_flow / row.total_revenue
+      : null;
+  const netMargin =
+    row.net_income != null && row.total_revenue != null && row.total_revenue !== 0
+      ? row.net_income / row.total_revenue
+      : null;
+  const competition =
+    revenueGrowth != null && revenueGrowth > 0.2 ? 'rising' : row.sector ? 'unknown' : 'few_players';
+  const marginTrend =
+    operatingMargins != null && profitMargins != null && Math.abs((operatingMargins || 0) - (profitMargins || 0)) <= 0.12
+      ? 'stable'
+      : 'unknown';
+  const deterministicStage = classifyLifecycleStageFromSignals({ revenueGrowth, competition, marginTrend });
+  return [
+    `=== BUSINESS / INSTRUMENT LIFECYCLE DATA (${row.ticker}) ===`,
+    `Company: ${row.company || 'N/A'}`,
+    `Ticker: ${row.ticker}`,
+    `Sector: ${row.sector || 'N/A'}`,
+    `Industry/Subsector: ${inferredSubsector(row) || 'N/A'}`,
+    `Yahoo fetch status: ${yahooRows.length > 0 ? 'loaded lifecycle row' : yahooError ? `unavailable: ${yahooError}` : 'no lifecycle row returned'}`,
+    '',
+    '--- Watchlist quantitative anchor ---',
+    buildWatchlistQuantitativeDataBlock(row),
+    '',
+    '--- Yahoo Finance business lifecycle fields ---',
+    `Revenue growth: ${pctLifecycle(revenueGrowth)}`,
+    `Earnings growth: ${pctLifecycle(earningsGrowth)}`,
+    `Gross margins: ${pctLifecycle(grossMargins)}`,
+    `Profit margins: ${pctLifecycle(profitMargins)}`,
+    `Operating margins: ${pctLifecycle(operatingMargins)}`,
+    `EBITDA margins: ${pctLifecycle(ebitdaMargins)}`,
+    `Net margin from statements: ${pctLifecycle(netMargin)}`,
+    `FCF margin from statements: ${pctLifecycle(fcfMargin)}`,
+    `Market cap: ${formatStatementNum(marketCap)}`,
+    `Enterprise value: ${formatStatementNum(enterpriseValue)}`,
+    `Recommendation mean: ${numLifecycle(recommendationMean, 2)}`,
+    `Target mean price: ${targetMeanPrice != null ? `$${targetMeanPrice.toFixed(2)}` : 'N/A'}`,
+    `Competition proxy: ${competition}`,
+    `Margin trend proxy: ${marginTrend} (direct multi-year margin trend is not available in this payload)`,
+    `Deterministic classification from requested logic: ${deterministicStage}`,
+    'Missing direct signals: user/customer growth, TAM/market-size growth, direct competitor/new-entrant count, consolidation/M&A count, and multi-year revenue/margin history.',
+    '=== END BUSINESS / INSTRUMENT LIFECYCLE DATA ===',
+  ].join('\n');
+}
+
+function buildLeadershipLifecycleDataBlock(row: WatchlistRow, yahooRows: unknown[], yahooError?: string): string {
+  const yahoo = (yahooRows.find((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    return String((raw as Record<string, unknown>).ticker || '').toUpperCase() === row.ticker.toUpperCase();
+  }) || {}) as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...row, ...yahoo };
+  const leaderName = String(merged.leader_name || '').trim() || 'N/A';
+  const leaderTitle = String(merged.leader_title || '').trim() || 'N/A';
+  const leaderTotalPay = finiteLifecycleNum(merged.leader_total_pay);
+  const leaderYearBorn = finiteLifecycleNum(merged.leader_year_born);
+  const officerCount = finiteLifecycleNum(merged.officer_count);
+  const heldPercentInsiders = finiteLifecycleNum(merged.held_percent_insiders);
+  const heldPercentInstitutions = finiteLifecycleNum(merged.held_percent_institutions);
+  const auditRisk = finiteLifecycleNum(merged.audit_risk);
+  const boardRisk = finiteLifecycleNum(merged.board_risk);
+  const compensationRisk = finiteLifecycleNum(merged.compensation_risk);
+  const shareholderRightsRisk = finiteLifecycleNum(merged.shareholder_rights_risk);
+  const overallRisk = finiteLifecycleNum(merged.overall_risk);
+  const revenueGrowth = finiteLifecycleNum(merged.revenue_growth);
+  const earningsGrowth = finiteLifecycleNum(merged.earnings_growth);
+  const profitMargins = finiteLifecycleNum(merged.profit_margins);
+  const operatingMargins = finiteLifecycleNum(merged.operating_margins);
+  const recommendationMean = finiteLifecycleNum(merged.recommendation_mean);
+  const targetMeanPrice = finiteLifecycleNum(merged.target_mean_price);
+  const managementNewsLines = formatYahooNewsForPrompt(merged.yahoo_management_news, 'Yahoo management / governance news');
+  const recentNewsLines = formatYahooNewsForPrompt(merged.yahoo_recent_news, 'Yahoo recent company news');
+  return [
+    `=== LEADERSHIP LIFECYCLE DATA (${row.ticker}) ===`,
+    `Company: ${row.company || 'N/A'}`,
+    `Ticker: ${row.ticker}`,
+    `Leader name: ${leaderName}`,
+    `Leader title: ${leaderTitle}`,
+    `Leader total pay: ${formatStatementNum(leaderTotalPay)}`,
+    `Leader year born: ${leaderYearBorn != null ? String(Math.round(leaderYearBorn)) : 'N/A'}`,
+    `Officer count: ${officerCount != null ? String(Math.round(officerCount)) : 'N/A'}`,
+    `Sector: ${row.sector || 'N/A'}`,
+    `Industry/Subsector: ${inferredSubsector(row) || 'N/A'}`,
+    `Yahoo fetch status: ${yahooRows.length > 0 ? 'loaded leadership/lifecycle row' : yahooError ? `unavailable: ${yahooError}` : 'no leadership row returned'}`,
+    '',
+    '--- Leadership execution proxies from company fundamentals ---',
+    `Revenue growth: ${pctLifecycle(revenueGrowth)}`,
+    `Earnings growth: ${pctLifecycle(earningsGrowth)}`,
+    `Profit margins: ${pctLifecycle(profitMargins)}`,
+    `Operating margins: ${pctLifecycle(operatingMargins)}`,
+    `Total revenue: ${formatStatementNum(row.total_revenue)}`,
+    `Net income: ${formatStatementNum(row.net_income)}`,
+    `Operating cash flow: ${formatStatementNum(row.operating_cash_flow)}`,
+    `Free cash flow: ${formatStatementNum(row.free_cash_flow)}`,
+    `Total assets: ${formatStatementNum(row.total_assets)}`,
+    `Total liabilities: ${formatStatementNum(row.total_liabilities)}`,
+    `Recommendation mean: ${numLifecycle(recommendationMean, 2)}`,
+    `Target mean price: ${targetMeanPrice != null ? `$${targetMeanPrice.toFixed(2)}` : 'N/A'}`,
+    `Insider ownership: ${pctLifecycle(heldPercentInsiders)}`,
+    `Institutional ownership: ${pctLifecycle(heldPercentInstitutions)}`,
+    `Audit risk (Yahoo 1 low to 10 high): ${numLifecycle(auditRisk, 0)}`,
+    `Board risk (Yahoo 1 low to 10 high): ${numLifecycle(boardRisk, 0)}`,
+    `Compensation risk (Yahoo 1 low to 10 high): ${numLifecycle(compensationRisk, 0)}`,
+    `Shareholder rights risk (Yahoo 1 low to 10 high): ${numLifecycle(shareholderRightsRisk, 0)}`,
+    `Overall governance risk (Yahoo 1 low to 10 high): ${numLifecycle(overallRisk, 0)}`,
+    '',
+    '--- Yahoo Finance news context ---',
+    ...managementNewsLines,
+    ...recentNewsLines,
+    '',
+    '--- Market / risk / execution proxies ---',
+    `Torchlight growth: ${numLifecycle(row.torchlight_growth, 2)}`,
+    `Torchlight quality: ${numLifecycle(row.torchlight_quality, 2)}`,
+    `Torchlight execution feasibility: ${numLifecycle(row.torchlight_execution_feasibility, 2)}`,
+    `Torchlight sentiment: ${numLifecycle(row.torchlight_sentiment, 2)}`,
+    `Risk summary score: ${numLifecycle(row.risk_summary_score, 2)}`,
+    `Sharpe: ${numLifecycle(row.risk_sharpe, 3)}`,
+    `Sortino: ${numLifecycle(row.risk_sortino, 3)}`,
+    `Max drawdown: ${pctLifecycle(row.risk_max_drawdown)}`,
+    '',
+    'Missing direct leadership signals when absent above: tenure, compensation alignment, insider ownership, management changes, succession risk, employee approval, governance quality, and direct strategic milestone history.',
+    '=== END LEADERSHIP LIFECYCLE DATA ===',
+  ].join('\n');
+}
+
 function buildContextualInsightPrompt(
   symbol: string,
   row: WatchlistRow | null,
   finnhubNewsBlock: string
 ): string {
   const extendedReportSpec = row
-    ? 'extended_report — string, REQUIRED: 6–10 paragraphs separated by two newline characters (\\n\\n), ~280–420 words total, plain prose only (no markdown tables). First paragraph must name the ticker symbol and company and restate the same stance as your JSON sentiment/recommendation in one cohesive lead. Then expand: (1) valuation vs current price with cited IV metrics (2) Torchlight headline + sub-scores + every CTR leg from the block (3) risk stack and what would invalidate the view (4) today’s Finnhub headline catalyst or explicitly none (5) time horizon / monitoring checklist. If any metric is N/A, say so. Numbers must match the data block or TODAY news block only.'
-    : 'extended_report — string, REQUIRED: 3–5 paragraphs separated by \\n\\n (~100–170 words). Name the ticker; watchlist fundamentals were not loaded — state that clearly, do not invent numbers, and anchor the rest only on the Finnhub TODAY block plus cautious general framing.';
+    ? 'extended_report — string, REQUIRED: 10–14 paragraphs separated by two newline characters (\\n\\n), ~750–1100 words total, plain prose only (no markdown tables). First paragraph must name the ticker symbol and company and restate the same stance as your JSON sentiment/recommendation in one cohesive lead. Then write distinct, detailed paragraphs for: (1) investment thesis and setup (2) valuation vs current price with cited IV DCF, IV RI, IV multiples, IV ensemble, IV quality, and IV upside (3) how reliable/conflicted the valuation anchors are (4) Torchlight headline and rank_factors (5) CTR total return, price return, cash return, annualized return, and Torchlight CTR composite (6) revenue, earnings, operating cash flow, free cash flow, margin/cash-conversion implications when possible (7) balance sheet using assets/liabilities when available (8) risk stack: volatility, beta, Sharpe, Sortino, drawdown, VaR and CVaR (9) what would invalidate the bullish/neutral/bearish view (10) today’s Finnhub headline catalyst or explicitly none (11) time horizon, position-sizing posture, and monitoring checklist. If any metric is N/A, say so. Numbers must match the data block or TODAY news block only.'
+    : 'extended_report — string, REQUIRED: 5–7 paragraphs separated by \\n\\n (~250–400 words). Name the ticker; watchlist fundamentals were not loaded — state that clearly, do not invent numbers, and anchor the rest only on the Finnhub TODAY block plus cautious general framing.';
 
   const densityRule = row
     ? 'Be dense and factual; no filler. Numbers must match the data block.'
@@ -548,14 +1227,14 @@ function buildContextualInsightPrompt(
       'sentiment — exactly one of: Bullish, Bearish, Neutral',
       'confidence — integer 0–100',
       'The app UI already renders a deterministic IV (green) and risk (red) signal strip from the same data — synthesize and add nuance; do not duplicate those bullets verbatim.',
-      'executive_summary — max ~50 words: tie IV vs price, Torchlight headline, and risk posture using ONLY numbers from the data block.',
-      'valuation_view — max ~60 words: IV DCF, IV RI, IV Multiples, IV Ensemble, IV Quality, IV Upside % vs Current price; discount/premium vs mark with cited figures.',
-      'torchlight_view — max ~75 words: Torchlight headline, rank_factors line, key sub-scores and **all CTR legs** (total, price, cash, annualized) + Torchlight CTR composite with cited figures.',
-      'risk_view — max ~60 words: risk summary score, Beta, Sharpe, Sortino, vols, max drawdown, VaR / CVaR — cite figures.',
-      'market_catalysts — max ~40 words: ONLY the TODAY Finnhub block below; if empty or no articles, write exactly: No ticker-specific headlines in the provided TODAY block.',
-      'pros — array of exactly 3 strings; each must name a metric and its value from the data block.',
-      'cons — array of exactly 3 strings; same rule.',
-      'recommendation — max ~65 words: reconcile IV vs price, Torchlight, CTR, risk, and catalysts (if any).',
+      'executive_summary — ~80–120 words: tie IV vs price, Torchlight headline, CTR, fundamentals, and risk posture using ONLY numbers from the data block.',
+      'valuation_view — ~110–160 words: IV DCF, IV RI, IV Multiples, IV Ensemble, IV Quality, IV Upside % vs Current price; discount/premium vs mark with cited figures; explain whether anchors agree or conflict.',
+      'torchlight_view — ~110–160 words: Torchlight headline, rank_factors line, key sub-scores and **all CTR legs** (total, price, cash, annualized) + Torchlight CTR composite with cited figures.',
+      'risk_view — ~120–170 words: risk summary score, Beta, Sharpe, Sortino, vols, max drawdown, VaR / CVaR — cite figures and interpret position risk.',
+      'market_catalysts — ~60–100 words: ONLY the TODAY Finnhub block below; if empty or no articles, write exactly: No ticker-specific headlines in the provided TODAY block.',
+      'pros — array of exactly 5 strings; each must name a metric and its value from the data block.',
+      'cons — array of exactly 5 strings; same rule.',
+      'recommendation — ~120–180 words: reconcile IV vs price, Torchlight, CTR, fundamentals, balance sheet, risk, catalysts, horizon, and monitoring triggers.',
       extendedReportSpec,
       densityRule,
     ].join('\n');
@@ -598,21 +1277,21 @@ function buildContextualInsightPrompt(
   ].join('\n');
 }
 
-function buildSectorInsightPrompt(sector: string, rows: WatchlistRow[]): string {
-  const valid = rows.filter((r) => (r.sector || '').trim() === sector);
+function buildSectorInsightPrompt(segmentLabel: string, rows: WatchlistRow[]): string {
+  const valid = rows;
   const top = [...valid]
     .sort((a, b) => (b.torchlight_score ?? -1) - (a.torchlight_score ?? -1))
     .slice(0, 8);
 
-  const aggregateBlock = buildSectorAggregateMetricsBlock(sector, valid);
+  const aggregateBlock = buildSectorAggregateMetricsBlock(segmentLabel, valid);
 
   const topTickers = top.map((r) => `${r.ticker}${r.company ? `(${r.company})` : ''}`).join(', ') || 'N/A';
   return [
-    `System: Generate a sector-level investment BRIEF for ${sector}.`,
+    `System: Generate a sector/subsector-level investment BRIEF for ${segmentLabel}.`,
     '',
     aggregateBlock,
     '',
-    `Constituents: ${valid.length} companies in this sector in the current universe.`,
+    `Constituents: ${valid.length} companies in this selected segment in the current universe.`,
     `Top representatives by Torchlight (for narrative color — still center on sector averages): ${topTickers}.`,
     '',
     'RULES:',
@@ -699,47 +1378,95 @@ type ForexHmmBatchRow = {
   error?: string;
 };
 
+type InsightTarget = 'ticker' | 'sector';
+type MarketInsightReportMeta = {
+  scope: 'Ticker' | 'Sector';
+  display: string;
+  subject: string;
+};
+
 const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
-  const [symbol, setSymbol] = useState('');
+  const [symbol, setSymbol] = useState(aiAnalysisUiMemory.symbol ?? '');
   const [loading, setLoading] = useState(false);
-  const [insight, setInsight] = useState<InsightResponse | null>(null);
+  const [insight, setInsight] = useState<InsightResponse | null>(aiAnalysisUiMemory.insight ?? null);
+  const [insightReportMeta, setInsightReportMeta] = useState<MarketInsightReportMeta | null>(
+    aiAnalysisUiMemory.insightReportMeta ?? null
+  );
   /** Deterministic IV / risk / Torchlight signals from the active watchlist row (instant, no LLM). */
   const [signalAnalysis, setSignalAnalysis] = useState<WatchlistSignalBundle | null>(null);
   const [error, setError] = useState('');
   const [watchlists, setWatchlists] = useState<DailyWatchlist[]>([]);
-  const [selectedWatchlistId, setSelectedWatchlistId] = useState<string>('');
+  const [selectedWatchlistId, setSelectedWatchlistId] = useState<string>(aiAnalysisUiMemory.selectedWatchlistId ?? '');
   /** Team = Supabase daily_watchlist rows; library = saved uploads in this browser (see watchlistFileLibrary). */
-  const [watchlistSnapshotSource, setWatchlistSnapshotSource] = useState<'team' | 'library'>('team');
+  const [watchlistSnapshotSource, setWatchlistSnapshotSource] = useState<'team' | 'library'>(
+    aiAnalysisUiMemory.watchlistSnapshotSource ?? 'team'
+  );
   const [libraryRev, setLibraryRev] = useState(0);
   const [libraryUploadBusy, setLibraryUploadBusy] = useState(false);
   const [watchlistRows, setWatchlistRows] = useState<WatchlistRow[]>([]);
   const [watchlistRowsLoading, setWatchlistRowsLoading] = useState(false);
   const [marketUniverse, setMarketUniverse] = useState<AiMarketUniverse>(() =>
-    isSp500OnlyMode() ? 'sp500' : 'none',
+    aiAnalysisUiMemory.marketUniverse ?? (isSp500OnlyMode() ? 'sp500' : 'none'),
   );
-  const [selectedRowTicker, setSelectedRowTicker] = useState<string>('');
-  const [selectedSector, setSelectedSector] = useState<string>('all');
-  const [selectedCompanyTicker, setSelectedCompanyTicker] = useState<string>('all');
-  const [minRiskSummary, setMinRiskSummary] = useState<string>('all');
-  const [rankBy, setRankBy] = useState<'torchlight' | 'risk_summary'>('torchlight');
+  const [insightTarget, setInsightTarget] = useState<InsightTarget>(aiAnalysisUiMemory.insightTarget ?? 'ticker');
+  const [selectedRowTicker, setSelectedRowTicker] = useState<string>(aiAnalysisUiMemory.selectedRowTicker ?? '');
+  const [selectedSector, setSelectedSector] = useState<string>(aiAnalysisUiMemory.selectedSector ?? 'all');
+  const [selectedSubsector, setSelectedSubsector] = useState<string>(aiAnalysisUiMemory.selectedSubsector ?? 'all');
+  const [selectedCompanyTicker, setSelectedCompanyTicker] = useState<string>(
+    aiAnalysisUiMemory.selectedCompanyTicker ?? 'all'
+  );
+  const [minRiskSummary, setMinRiskSummary] = useState<string>(aiAnalysisUiMemory.minRiskSummary ?? 'all');
+  const [rankBy, setRankBy] = useState<'torchlight' | 'risk_summary'>(
+    aiAnalysisUiMemory.rankBy ?? 'torchlight'
+  );
   const [reportMode, setReportMode] = useState<'single' | 'portfolio'>('single');
   const [portfolioItems, setPortfolioItems] = useState<PortfolioItem[]>([]);
   const [returnsByTicker, setReturnsByTicker] = useState<Record<string, ReturnPoint[]>>({});
   const [returnsLoading, setReturnsLoading] = useState(false);
-  const [insightScope, setInsightScope] = useState<'Ticker' | 'Sector'>('Ticker');
-  const [exportInsightTop10, setExportInsightTop10] = useState(true);
-  const [exportInsightLow10, setExportInsightLow10] = useState(true);
+  const [insightScope, setInsightScope] = useState<'Ticker' | 'Sector'>(aiAnalysisUiMemory.insightScope ?? 'Ticker');
   const [forexHmmLoading, setForexHmmLoading] = useState(false);
   const [forexHmmResults, setForexHmmResults] = useState<ForexHmmBatchRow[]>([]);
   const [watchlistConditionBrief, setWatchlistConditionBrief] = useState<TickerWatchlistConditionBrief | null>(null);
   const [watchlistConditionBriefLoading, setWatchlistConditionBriefLoading] = useState(false);
   const [watchlistConditionBriefError, setWatchlistConditionBriefError] = useState('');
-  const [growthRiskDashboard, setGrowthRiskDashboard] = useState<GrowthRiskDashboardReport | null>(null);
+  const [growthRiskDashboard, setGrowthRiskDashboard] = useState<GrowthRiskDashboardReport | null>(
+    aiAnalysisUiMemory.growthRiskDashboard ?? null
+  );
   const [growthRiskDashboardLoading, setGrowthRiskDashboardLoading] = useState(false);
-  const [growthRiskDashboardError, setGrowthRiskDashboardError] = useState('');
+  const [growthRiskDashboardError, setGrowthRiskDashboardError] = useState(
+    aiAnalysisUiMemory.growthRiskDashboardError ?? ''
+  );
+  const [businessLifecycleReport, setBusinessLifecycleReport] = useState<IndustryLifecycleReport | null>(
+    aiAnalysisUiMemory.businessLifecycleReport ?? null
+  );
+  const [industryLifecycleReport, setIndustryLifecycleReport] = useState<IndustryLifecycleReport | null>(
+    aiAnalysisUiMemory.industryLifecycleReport ?? null
+  );
+  const [industryLifecycleReportKind, setIndustryLifecycleReportKind] = useState<'industry' | 'business' | 'leadership'>(
+    aiAnalysisUiMemory.industryLifecycleReportKind ?? 'industry'
+  );
+  const [industryLifecycleLoading, setIndustryLifecycleLoading] = useState(false);
+  const [industryLifecycleError, setIndustryLifecycleError] = useState(
+    aiAnalysisUiMemory.industryLifecycleError ?? ''
+  );
   const watchlistApiUrl = getDefaultWatchlistApiBase();
 
   const libraryEntries = useMemo(() => getWatchlistFileLibrary(), [libraryRev]);
+
+  const bestLibraryMetricsByTicker = useMemo(() => {
+    const best = new Map<string, WatchlistRow>();
+    for (const entry of libraryEntries) {
+      const rows = mapDailyItemsToWatchlistRows(snapshotToDailyWatchlistItems(entry.snapshot));
+      for (const row of rows) {
+        const ticker = row.ticker.toUpperCase();
+        const current = best.get(ticker);
+        if (!current || watchlistMetricCount(row) > watchlistMetricCount(current)) {
+          best.set(ticker, row);
+        }
+      }
+    }
+    return best;
+  }, [libraryEntries]);
 
   const aiUniverseSelectKeys = useMemo((): Exclude<AiMarketUniverse, 'none'>[] => {
     if (isSp500OnlyMode()) return ['watchlist', 'sp500'];
@@ -748,6 +1475,50 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
       'none'
     >[];
   }, []);
+
+  useEffect(() => {
+    aiAnalysisUiMemory.symbol = symbol;
+    aiAnalysisUiMemory.selectedWatchlistId = selectedWatchlistId;
+    aiAnalysisUiMemory.watchlistSnapshotSource = watchlistSnapshotSource;
+    aiAnalysisUiMemory.marketUniverse = marketUniverse;
+    aiAnalysisUiMemory.insightTarget = insightTarget;
+    aiAnalysisUiMemory.selectedRowTicker = selectedRowTicker;
+    aiAnalysisUiMemory.selectedSector = selectedSector;
+    aiAnalysisUiMemory.selectedSubsector = selectedSubsector;
+    aiAnalysisUiMemory.selectedCompanyTicker = selectedCompanyTicker;
+    aiAnalysisUiMemory.minRiskSummary = minRiskSummary;
+    aiAnalysisUiMemory.rankBy = rankBy;
+    aiAnalysisUiMemory.insight = insight;
+    aiAnalysisUiMemory.insightReportMeta = insightReportMeta;
+    aiAnalysisUiMemory.insightScope = insightScope;
+    aiAnalysisUiMemory.growthRiskDashboard = growthRiskDashboard;
+    aiAnalysisUiMemory.growthRiskDashboardError = growthRiskDashboardError;
+    aiAnalysisUiMemory.businessLifecycleReport = businessLifecycleReport;
+    aiAnalysisUiMemory.industryLifecycleReport = industryLifecycleReport;
+    aiAnalysisUiMemory.industryLifecycleReportKind = industryLifecycleReportKind;
+    aiAnalysisUiMemory.industryLifecycleError = industryLifecycleError;
+  }, [
+    symbol,
+    selectedWatchlistId,
+    watchlistSnapshotSource,
+    marketUniverse,
+    insightTarget,
+    selectedRowTicker,
+    selectedSector,
+    selectedSubsector,
+    selectedCompanyTicker,
+    minRiskSummary,
+    rankBy,
+    insight,
+    insightReportMeta,
+    insightScope,
+    growthRiskDashboard,
+    growthRiskDashboardError,
+    businessLifecycleReport,
+    industryLifecycleReport,
+    industryLifecycleReportKind,
+    industryLifecycleError,
+  ]);
 
   useEffect(() => {
     if (watchlistSnapshotSource === 'team') {
@@ -795,7 +1566,6 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
 
   useEffect(() => {
     if (marketUniverse === 'forex') {
-      setInsight(null);
       setError('');
       setSymbol('');
       setSelectedRowTicker('');
@@ -916,6 +1686,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
 
   useEffect(() => {
     setSelectedSector('all');
+    setSelectedSubsector('all');
     setSelectedCompanyTicker('all');
     setMinRiskSummary('all');
     setSelectedRowTicker('');
@@ -972,7 +1743,31 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               sector: y.sector || b?.sector || '',
               industry: b?.industry || y.industry || '',
               location: b?.location || '',
+              leader_name: typeof y.leader_name === 'string' ? y.leader_name : null,
+              leader_title: typeof y.leader_title === 'string' ? y.leader_title : null,
+              leader_total_pay: y.leader_total_pay != null ? Number(y.leader_total_pay) : null,
+              leader_year_born: y.leader_year_born != null ? Number(y.leader_year_born) : null,
+              officer_count: y.officer_count != null ? Number(y.officer_count) : null,
+              held_percent_insiders: y.held_percent_insiders != null ? Number(y.held_percent_insiders) : null,
+              held_percent_institutions: y.held_percent_institutions != null ? Number(y.held_percent_institutions) : null,
+              audit_risk: y.audit_risk != null ? Number(y.audit_risk) : null,
+              board_risk: y.board_risk != null ? Number(y.board_risk) : null,
+              compensation_risk: y.compensation_risk != null ? Number(y.compensation_risk) : null,
+              shareholder_rights_risk: y.shareholder_rights_risk != null ? Number(y.shareholder_rights_risk) : null,
+              overall_risk: y.overall_risk != null ? Number(y.overall_risk) : null,
               current_price: typeof y.current_price === 'number' ? y.current_price : null,
+              revenue_growth: y.revenue_growth != null ? Number(y.revenue_growth) : null,
+              earnings_growth: y.earnings_growth != null ? Number(y.earnings_growth) : null,
+              gross_margins: y.gross_margins != null ? Number(y.gross_margins) : null,
+              profit_margins: y.profit_margins != null ? Number(y.profit_margins) : null,
+              operating_margins: y.operating_margins != null ? Number(y.operating_margins) : null,
+              ebitda_margins: y.ebitda_margins != null ? Number(y.ebitda_margins) : null,
+              market_cap: y.market_cap != null ? Number(y.market_cap) : null,
+              enterprise_value: y.enterprise_value != null ? Number(y.enterprise_value) : null,
+              shares_outstanding: y.shares_outstanding != null ? Number(y.shares_outstanding) : null,
+              average_volume: y.average_volume != null ? Number(y.average_volume) : null,
+              recommendation_mean: y.recommendation_mean != null ? Number(y.recommendation_mean) : null,
+              target_mean_price: y.target_mean_price != null ? Number(y.target_mean_price) : null,
               total_assets: y.total_assets != null ? Number(y.total_assets) : null,
               total_liabilities: y.total_liabilities != null ? Number(y.total_liabilities) : null,
               total_revenue: y.total_revenue != null ? Number(y.total_revenue) : null,
@@ -1047,7 +1842,38 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             (row) => row.torchlight_score != null || row.ctr_total_return != null || row.ctr_annualized != null
           );
           if (hasTorchlightOrCtr) {
-            setWatchlistRows(rows);
+            let enrichedRows = rows;
+            try {
+              const basicsByTicker = await getCompanyFundamentalsByTickers(symbols);
+              let yahooByTicker: Record<string, any> = {};
+              if (rows.some((row) => !(row.industry || basicsByTicker[row.ticker.toUpperCase()]?.industry))) {
+                try {
+                  const yahooData = ((await fetchFinancialsBatchChunked(watchlistApiUrl, symbols)) as any[]) || [];
+                  yahooData.forEach((r: any) => {
+                    const t = String(r?.ticker || '').toUpperCase();
+                    if (t) yahooByTicker[t] = r;
+                  });
+                } catch (e) {
+                  const m = e instanceof Error ? e.message : String(e);
+                  if (m.includes('Watchlist API')) setError(m);
+                }
+              }
+              enrichedRows = rows.map((row) => {
+                const ticker = row.ticker.toUpperCase();
+                const b = basicsByTicker[ticker];
+                const y = yahooByTicker[ticker] || {};
+                return {
+                  ...row,
+                  company: row.company || b?.company || y.short_name || '',
+                  sector: row.sector || y.sector || b?.sector || '',
+                  industry: row.industry || b?.industry || y.industry || '',
+                  location: row.location || b?.location || '',
+                };
+              });
+            } catch {
+              enrichedRows = rows;
+            }
+            setWatchlistRows(enrichedRows);
             return;
           }
         }
@@ -1076,7 +1902,31 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             sector: y.sector || b?.sector || '',
             industry: b?.industry || y.industry || '',
             location: b?.location || '',
+            leader_name: typeof y.leader_name === 'string' ? y.leader_name : null,
+            leader_title: typeof y.leader_title === 'string' ? y.leader_title : null,
+            leader_total_pay: y.leader_total_pay != null ? Number(y.leader_total_pay) : null,
+            leader_year_born: y.leader_year_born != null ? Number(y.leader_year_born) : null,
+            officer_count: y.officer_count != null ? Number(y.officer_count) : null,
+            held_percent_insiders: y.held_percent_insiders != null ? Number(y.held_percent_insiders) : null,
+            held_percent_institutions: y.held_percent_institutions != null ? Number(y.held_percent_institutions) : null,
+            audit_risk: y.audit_risk != null ? Number(y.audit_risk) : null,
+            board_risk: y.board_risk != null ? Number(y.board_risk) : null,
+            compensation_risk: y.compensation_risk != null ? Number(y.compensation_risk) : null,
+            shareholder_rights_risk: y.shareholder_rights_risk != null ? Number(y.shareholder_rights_risk) : null,
+            overall_risk: y.overall_risk != null ? Number(y.overall_risk) : null,
             current_price: typeof y.current_price === 'number' ? y.current_price : null,
+            revenue_growth: y.revenue_growth != null ? Number(y.revenue_growth) : null,
+            earnings_growth: y.earnings_growth != null ? Number(y.earnings_growth) : null,
+            gross_margins: y.gross_margins != null ? Number(y.gross_margins) : null,
+            profit_margins: y.profit_margins != null ? Number(y.profit_margins) : null,
+            operating_margins: y.operating_margins != null ? Number(y.operating_margins) : null,
+            ebitda_margins: y.ebitda_margins != null ? Number(y.ebitda_margins) : null,
+            market_cap: y.market_cap != null ? Number(y.market_cap) : null,
+            enterprise_value: y.enterprise_value != null ? Number(y.enterprise_value) : null,
+            shares_outstanding: y.shares_outstanding != null ? Number(y.shares_outstanding) : null,
+            average_volume: y.average_volume != null ? Number(y.average_volume) : null,
+            recommendation_mean: y.recommendation_mean != null ? Number(y.recommendation_mean) : null,
+            target_mean_price: y.target_mean_price != null ? Number(y.target_mean_price) : null,
             total_assets: y.total_assets != null ? Number(y.total_assets) : null,
             total_liabilities: y.total_liabilities != null ? Number(y.total_liabilities) : null,
             total_revenue: y.total_revenue != null ? Number(y.total_revenue) : null,
@@ -1152,23 +2002,29 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
     marketUniverse === 'watchlist' || marketUniverse === 'sp500';
 
   /** For NASDAQ / Commodity, overlay metrics from the selected team watchlist snapshot when tickers match. */
+  const enrichedWatchlistRows = useMemo(
+    () => watchlistRows.map((row) => mergeMissingWatchlistMetrics(row, bestLibraryMetricsByTicker.get(row.ticker.toUpperCase()))),
+    [watchlistRows, bestLibraryMetricsByTicker]
+  );
+
   const enrichedDirectoryRows = useMemo(() => {
     if (marketUniverse !== 'nasdaq' && marketUniverse !== 'commodity') return syntheticUniverseRows;
-    const by = new Map(watchlistRows.map((r) => [r.ticker.toUpperCase(), r]));
+    const by = new Map(enrichedWatchlistRows.map((r) => [r.ticker.toUpperCase(), r]));
     return syntheticUniverseRows.map((s) => {
       const w = by.get(s.ticker.toUpperCase());
-      return w ? (Object.assign({}, s, w) as WatchlistRow) : s;
+      const fallback = bestLibraryMetricsByTicker.get(s.ticker.toUpperCase());
+      return w ? (Object.assign({}, s, w) as WatchlistRow) : mergeMissingWatchlistMetrics(s, fallback);
     });
-  }, [marketUniverse, syntheticUniverseRows, watchlistRows]);
+  }, [marketUniverse, syntheticUniverseRows, enrichedWatchlistRows, bestLibraryMetricsByTicker]);
 
   const activeRows = useMemo(() => {
     if (marketUniverse === 'none') return [];
-    if (marketUniverse === 'watchlist') return watchlistRows;
+    if (marketUniverse === 'watchlist') return enrichedWatchlistRows;
     if (marketUniverse === 'sp500') {
-      return watchlistRows.filter((r) => SP500_SYMBOL_SET.has(r.ticker.toUpperCase()));
+      return enrichedWatchlistRows.filter((r) => SP500_SYMBOL_SET.has(r.ticker.toUpperCase()));
     }
     return enrichedDirectoryRows;
-  }, [marketUniverse, watchlistRows, enrichedDirectoryRows]);
+  }, [marketUniverse, enrichedWatchlistRows, enrichedDirectoryRows]);
 
   const activeRowsLoading =
     usesWatchlistData || marketUniverse === 'nasdaq' || marketUniverse === 'commodity'
@@ -1189,9 +2045,71 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   const sectorTrimmed: string[] = activeRows
     .map((r) => (r.sector || '').trim())
     .filter((s): s is string => s.length > 0);
-  const sectorOptions: string[] = [...new Set(sectorTrimmed)].sort((a, b) => a.localeCompare(b));
+  const sectorOptions: string[] = Array.from(new Set<string>(sectorTrimmed)).sort((a, b) => a.localeCompare(b));
+  const subsectorOptions = useMemo(() => {
+    if (selectedSector === 'all') return [] as string[];
+    const industries = activeRows
+      .filter((r) => (r.sector || '').trim() === selectedSector)
+      .map((r) => inferredSubsector(r))
+      .filter((s): s is string => s.length > 0);
+    return Array.from(new Set<string>(industries)).sort((a, b) => a.localeCompare(b));
+  }, [activeRows, selectedSector]);
 
-  const companyOptions = activeRows
+  const subsectorsBySector = useMemo(() => {
+    const groups = new Map<string, Map<string, number>>();
+    for (const row of activeRows) {
+      const sector = (row.sector || '').trim();
+      const industry = inferredSubsector(row);
+      if (!sector || !industry) continue;
+      if (!groups.has(sector)) groups.set(sector, new Map<string, number>());
+      const sectorIndustries = groups.get(sector)!;
+      sectorIndustries.set(industry, (sectorIndustries.get(industry) || 0) + 1);
+    }
+    return Array.from(groups.entries())
+      .map(([sector, industries]) => ({
+        sector,
+        industries: Array.from(industries.entries())
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .filter((group) => group.industries.length > 0)
+      .sort((a, b) => a.sector.localeCompare(b.sector));
+  }, [activeRows]);
+
+  const sectorSubsectorSelectValue =
+    selectedSector === 'all' || selectedSubsector === 'all'
+      ? ''
+      : `${selectedSector}|||${selectedSubsector}`;
+  const selectedSectorSubsectorChoices =
+    selectedSector === 'all'
+      ? []
+      : subsectorsBySector.find((group) => group.sector === selectedSector)?.industries ?? [];
+
+  useEffect(() => {
+    if (selectedSubsector === 'all') return;
+    if (!subsectorOptions.includes(selectedSubsector)) {
+      setSelectedSubsector('all');
+    }
+  }, [selectedSubsector, subsectorOptions]);
+
+  const sectorSegmentRows = useMemo(() => {
+    if (selectedSector === 'all') return [] as WatchlistRow[];
+    return activeRows.filter((r) => {
+      const matchesSector = (r.sector || '').trim() === selectedSector;
+      const matchesSubsector = selectedSubsector === 'all' || inferredSubsector(r) === selectedSubsector;
+      return matchesSector && matchesSubsector;
+    });
+  }, [activeRows, selectedSector, selectedSubsector]);
+
+  const sectorSegmentLabel =
+    selectedSector === 'all'
+      ? 'Sector aggregate'
+      : selectedSubsector === 'all'
+        ? selectedSector
+        : `${selectedSector} / ${selectedSubsector}`;
+
+  const companyOptionRows = selectedSector === 'all' ? activeRows : sectorSegmentRows;
+  const companyOptions = companyOptionRows
     .map((r) => ({ ticker: r.ticker, label: `${r.ticker} — ${r.company || 'Unknown'}` }))
     .sort((a, b) => a.label.localeCompare(b.label));
 
@@ -1204,10 +2122,11 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
 
   const filteredRows = activeRows.filter((r) => {
     const matchesSector = selectedSector === 'all' || (r.sector || '').trim() === selectedSector;
+    const matchesSubsector = selectedSubsector === 'all' || inferredSubsector(r) === selectedSubsector;
     const matchesCompany = selectedCompanyTicker === 'all' || r.ticker === selectedCompanyTicker;
     const minRisk = minRiskSummary === 'all' ? null : Number(minRiskSummary);
     const matchesRisk = minRisk == null || (r.risk_summary_score != null && r.risk_summary_score >= minRisk);
-    return matchesSector && matchesCompany && matchesRisk;
+    return matchesSector && matchesSubsector && matchesCompany && matchesRisk;
   });
   const rankedRows = [...filteredRows].sort((a, b) => {
     const ak = rankBy === 'risk_summary' ? (a.risk_summary_score ?? -1) : (a.torchlight_score ?? -1);
@@ -1215,21 +2134,59 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
     return bk - ak;
   });
   const selectedRow = rankedRows.find((r) => r.ticker === selectedRowTicker) || rankedRows[0] || null;
+  const growthRiskDashboardJobKey = useMemo(() => {
+    if (insightTarget === 'ticker') {
+      if (!selectedRow) return '';
+      return [
+        'ticker',
+        watchlistSnapshotSource,
+        selectedWatchlistId,
+        selectedRow.ticker.toUpperCase(),
+        selectedRow.current_price ?? 'na',
+        selectedRow.iv_ensemble ?? 'na',
+        selectedRow.iv_upside_pct ?? 'na',
+        selectedRow.risk_summary_score ?? 'na',
+        selectedRow.torchlight_score ?? 'na',
+      ].join('|');
+    }
+    if (selectedSector === 'all') return '';
+    return ['sector', watchlistSnapshotSource, selectedWatchlistId, sectorSegmentLabel, sectorSegmentRows.length].join('|');
+  }, [
+    insightTarget,
+    selectedRow,
+    selectedSector,
+    sectorSegmentLabel,
+    sectorSegmentRows.length,
+    watchlistSnapshotSource,
+    selectedWatchlistId,
+  ]);
+
+  useEffect(() => {
+    if (marketUniverse === 'forex' || insightTarget !== 'ticker' || !selectedRow || watchlistUniverseDataMissing) {
+      setSignalAnalysis(null);
+      return;
+    }
+    setSignalAnalysis(deriveWatchlistSignalAnalysis(selectedRow));
+  }, [marketUniverse, insightTarget, selectedRow, watchlistUniverseDataMissing]);
 
   const insightReportBuild = useMemo(() => {
+    if (insight && insightReportMeta) {
+      return {
+        label: insightReportMeta.scope,
+        subject: insightReportMeta.subject,
+        display: insightReportMeta.display,
+      };
+    }
     if (insightScope === 'Ticker') {
       const t = symbol.trim().toUpperCase();
       return { label: 'Ticker', subject: t, display: t || '—' };
     }
     if (insightScope === 'Sector') {
-      const name =
-        selectedSector !== 'all'
-          ? selectedSector.trim()
-          : symbol.trim() || 'Sector aggregate';
+      const name = selectedSector !== 'all' ? sectorSegmentLabel : symbol.trim() || 'Sector aggregate';
       return { label: 'Sector', subject: name.toUpperCase(), display: name.toUpperCase() };
     }
     return { label: '', subject: '', display: '' };
-  }, [insightScope, symbol, selectedSector]);
+  }, [insight, insightReportMeta, insightScope, symbol, selectedSector, sectorSegmentLabel]);
 
   useEffect(() => {
     const loadReturns = async () => {
@@ -1279,27 +2236,29 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
     return { row: selectedRow, flags, score, verdict, action };
   }, [selectedRow]);
 
+  const marketInsightRows = useMemo(() => {
+    if (selectedSector !== 'all') return sectorSegmentRows;
+    return [] as WatchlistRow[];
+  }, [selectedSector, sectorSegmentRows]);
+
+  const marketInsightScopeLabel =
+    selectedSector === 'all' ? 'select a sector or subsector' : sectorSegmentLabel;
+
   const marketInsights = useMemo(() => {
-    if (!rankedRows.length) {
+    if (!marketInsightRows.length) {
       return {
-        top10: [] as Array<{ row: WatchlistRow; score: number }>,
-        low10: [] as Array<{ row: WatchlistRow; score: number }>,
+        ranked: [] as Array<{ row: WatchlistRow; score: number }>,
       };
     }
-    const scored = rankedRows.map((row) => ({
+    const scored = marketInsightRows.map((row) => ({
       row,
       score: opportunityCompositeScore(row),
     }));
-    const top10 = [...scored]
+    const ranked = [...scored]
       .sort((a, b) => b.score - a.score)
-      .slice(0, 10)
       .map((x) => ({ row: x.row, score: x.score }));
-    const low10 = [...scored]
-      .sort((a, b) => a.score - b.score)
-      .slice(0, 10)
-      .map((x) => ({ row: x.row, score: x.score }));
-    return { top10, low10 };
-  }, [rankedRows]);
+    return { ranked };
+  }, [marketInsightRows]);
 
   const portfolioReport = useMemo(() => {
     if (rankedRows.length === 0) return null;
@@ -1445,7 +2404,6 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   const handleRunForexHmmBatch = async () => {
     setForexHmmLoading(true);
     setError('');
-    setInsight(null);
     setSignalAnalysis(null);
     setForexHmmResults([]);
     try {
@@ -1476,6 +2434,10 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   const handleAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
     if (marketUniverse === 'forex') return;
+    if (insightTarget === 'sector') {
+      await handleSectorAnalyze();
+      return;
+    }
     const rawInput = symbol.trim();
     const selectedByClick = selectedRowTicker
       ? rankedRows.find((r) => r.ticker === selectedRowTicker) || null
@@ -1489,7 +2451,6 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
     if (!rawInput && !preferredTickerRow) return;
 
     setError('');
-    setInsight(null);
     if (preferredTickerRow) {
       const t = preferredTickerRow.ticker.toUpperCase();
       setSignalAnalysis(deriveWatchlistSignalAnalysis(preferredTickerRow));
@@ -1513,8 +2474,9 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
         });
         const todayNewsBlock = promptBlockFromBundle(todayNewsBundle);
         const contextualPrompt = buildContextualInsightPrompt(ticker, preferredTickerRow, todayNewsBlock);
-        const data = await getStockInsight(ticker, contextualPrompt, { maxOutputTokens: 3200 });
+        const data = await getStockInsight(ticker, contextualPrompt, { maxOutputTokens: 6200 });
         setInsight(data);
+        setInsightReportMeta({ scope: 'Ticker', subject: ticker, display: ticker });
       } else {
         const symbolUpper = rawInput.toUpperCase();
         const inputNorm = normalizeLookupValue(rawInput);
@@ -1528,6 +2490,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
           const data = await getStockInsight(sectorMatch.toUpperCase(), prompt, { maxOutputTokens: 1550 });
           setInsight(data);
           setInsightScope('Sector');
+          setInsightReportMeta({ scope: 'Sector', subject: sectorMatch.toUpperCase(), display: sectorMatch.toUpperCase() });
         } else {
           throw new Error('Select a ticker from the loaded watchlist table to run watchlist-only condition and risk analysis.');
         }
@@ -1550,15 +2513,23 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
       return;
     }
     setSignalAnalysis(null);
-    setInsight(null);
+    setInsightTarget('sector');
     setLoading(true);
     setError('');
     try {
-      const sectorRows = activeRows.filter((r) => (r.sector || '').trim() === selectedSector);
-      const prompt = buildSectorInsightPrompt(selectedSector, sectorRows);
-      const data = await getStockInsight(selectedSector.toUpperCase(), prompt, { maxOutputTokens: 1550 });
+      const sectorRows = sectorSegmentRows;
+      if (sectorRows.length === 0) {
+        throw new Error(`No rows found for "${sectorSegmentLabel}" in the current symbol set.`);
+      }
+      const prompt = buildSectorInsightPrompt(sectorSegmentLabel, sectorRows);
+      const data = await getStockInsight(sectorSegmentLabel.toUpperCase(), prompt, { maxOutputTokens: 1550 });
       setInsight(data);
       setInsightScope('Sector');
+      setInsightReportMeta({
+        scope: 'Sector',
+        subject: sectorSegmentLabel.toUpperCase(),
+        display: sectorSegmentLabel.toUpperCase(),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not fetch sector analysis. Please try again.';
       setError(message);
@@ -1570,9 +2541,37 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
   useEffect(() => {
     setWatchlistConditionBrief(null);
     setWatchlistConditionBriefError('');
-    setGrowthRiskDashboard(null);
-    setGrowthRiskDashboardError('');
-  }, [selectedRow?.ticker, selectedSector]);
+  }, [selectedRow?.ticker, selectedSector, selectedSubsector, insightTarget]);
+
+  useEffect(() => {
+    if (!growthRiskDashboardJobKey) {
+      setGrowthRiskDashboardLoading(false);
+      return;
+    }
+
+    const syncJob = () => {
+      const job = growthRiskReportJobs.get(growthRiskDashboardJobKey);
+      if (!job) {
+        setGrowthRiskDashboardLoading(false);
+        return;
+      }
+      if (job.status === 'pending') {
+        setGrowthRiskDashboardLoading(true);
+        setGrowthRiskDashboardError('');
+        return;
+      }
+      setGrowthRiskDashboardLoading(false);
+      if (job.status === 'done' && job.report) {
+        setGrowthRiskDashboard(job.report);
+        setGrowthRiskDashboardError('');
+      } else if (job.status === 'error') {
+        setGrowthRiskDashboardError(job.error || 'Could not generate growth & risk report.');
+      }
+    };
+
+    syncJob();
+    return subscribeGrowthRiskReportJobs(syncJob);
+  }, [growthRiskDashboardJobKey]);
 
   useEffect(() => {
     if (!growthRiskDashboard) return;
@@ -1618,7 +2617,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
     }
   }, [marketUniverse, selectedRow, watchlistUniverseDataMissing]);
 
-  const handleGrowthRiskDashboard = useCallback(async () => {
+  const handleGrowthRiskDashboard = useCallback(() => {
     if (marketUniverse === 'forex') {
       setGrowthRiskDashboardError('Growth & risk report is for equities only.');
       return;
@@ -1627,50 +2626,217 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
       setGrowthRiskDashboardError('Load a watchlist snapshot before generating this report.');
       return;
     }
+    if (!growthRiskDashboardJobKey) {
+      setGrowthRiskDashboardError('Select a ticker or sector first.');
+      return;
+    }
     setGrowthRiskDashboardLoading(true);
     setGrowthRiskDashboardError('');
-    try {
-      if (selectedRow) {
-        const dataBlock = buildWatchlistQuantitativeDataBlock(selectedRow);
-        const report = await getGrowthRiskDashboard(
+
+    if (insightTarget === 'ticker') {
+      if (!selectedRow) {
+        setGrowthRiskDashboard(null);
+        setGrowthRiskDashboardError('Select a ticker first.');
+        setGrowthRiskDashboardLoading(false);
+        return;
+      }
+      const tickerRow = selectedRow;
+      const job = startGrowthRiskReportJob(growthRiskDashboardJobKey, async () => {
+        const dataBlock = await buildTickerGrowthRiskContextBlock(tickerRow, watchlistApiUrl);
+        return getGrowthRiskDashboard(
           'ticker',
-          selectedRow.ticker.toUpperCase(),
-          selectedRow.company || selectedRow.ticker,
+          tickerRow.ticker.toUpperCase(),
+          tickerRow.company || tickerRow.ticker,
           dataBlock,
-          2600,
+          4200,
         );
-        setGrowthRiskDashboard(report);
-        return;
+      });
+      if (job.status === 'done' && job.report) {
+        setGrowthRiskDashboard(job.report);
+        setGrowthRiskDashboardLoading(false);
+      } else if (job.status === 'error') {
+        setGrowthRiskDashboard(null);
+        setGrowthRiskDashboardError(job.error || 'Could not generate growth & risk report.');
+        setGrowthRiskDashboardLoading(false);
       }
-      if (selectedSector !== 'all') {
-        const sectorRows = activeRows.filter((r) => (r.sector || '').trim() === selectedSector);
-        if (sectorRows.length === 0) {
-          setGrowthRiskDashboard(null);
-          setGrowthRiskDashboardError(`No symbols in sector "${selectedSector}" for this universe.`);
-          return;
-        }
-        const dataBlock = buildSectorAggregateMetricsBlock(selectedSector, sectorRows);
-        const report = await getGrowthRiskDashboard(
-          'sector',
-          selectedSector,
-          `${sectorRows.length} constituents in current universe`,
-          dataBlock,
-          2600,
-        );
-        setGrowthRiskDashboard(report);
-        return;
-      }
+      return;
+    }
+
+    if (selectedSector === 'all') {
       setGrowthRiskDashboard(null);
-      setGrowthRiskDashboardError('Select a table row (ticker) or set sector filter to a specific sector.');
-    } catch (err) {
+      setGrowthRiskDashboardError('Select a sector first.');
+      setGrowthRiskDashboardLoading(false);
+      return;
+    }
+    const sectorRows = sectorSegmentRows;
+    if (sectorRows.length === 0) {
       setGrowthRiskDashboard(null);
-      setGrowthRiskDashboardError(
-        err instanceof Error ? err.message : 'Could not generate growth & risk report.',
+      setGrowthRiskDashboardError(`No symbols in "${sectorSegmentLabel}" for this universe.`);
+      setGrowthRiskDashboardLoading(false);
+      return;
+    }
+    const rowsForJob = sectorRows;
+    const sectorName = sectorSegmentLabel;
+    const job = startGrowthRiskReportJob(growthRiskDashboardJobKey, async () => {
+      const dataBlock = buildSectorAggregateMetricsBlock(sectorName, rowsForJob);
+      return getGrowthRiskDashboard(
+        'sector',
+        sectorName,
+        `${rowsForJob.length} constituents in current universe`,
+        dataBlock,
+        2600,
       );
-    } finally {
+    });
+    if (job.status === 'done' && job.report) {
+      setGrowthRiskDashboard(job.report);
+      setGrowthRiskDashboardLoading(false);
+    } else if (job.status === 'error') {
+      setGrowthRiskDashboard(null);
+      setGrowthRiskDashboardError(job.error || 'Could not generate growth & risk report.');
       setGrowthRiskDashboardLoading(false);
     }
-  }, [marketUniverse, selectedRow, selectedSector, activeRows, watchlistUniverseDataMissing]);
+  }, [
+    marketUniverse,
+    insightTarget,
+    selectedRow,
+    selectedSector,
+    sectorSegmentRows,
+    sectorSegmentLabel,
+    watchlistUniverseDataMissing,
+    watchlistApiUrl,
+    growthRiskDashboardJobKey,
+  ]);
+
+  const handleIndustryLifecycleAnalysis = useCallback(async () => {
+    if (marketUniverse === 'forex') {
+      setIndustryLifecycleError('Lifecycle analysis is for equity tickers, sectors, and subsectors only.');
+      return;
+    }
+    if (watchlistUniverseDataMissing) {
+      setIndustryLifecycleError('Load a watchlist snapshot before generating lifecycle analysis.');
+      return;
+    }
+
+    setIndustryLifecycleLoading(true);
+    setIndustryLifecycleError('');
+    try {
+      const isBusinessLifecycle = insightTarget === 'ticker';
+      const rows = isBusinessLifecycle ? (selectedRow ? [selectedRow] : []) : sectorSegmentRows;
+      const subjectLabel = isBusinessLifecycle
+        ? selectedRow
+          ? `${selectedRow.ticker} / ${selectedRow.company || selectedRow.ticker}`
+          : ''
+        : sectorSegmentLabel;
+      if (rows.length === 0 || !subjectLabel) {
+        throw new Error(
+          isBusinessLifecycle
+            ? 'Select a ticker first.'
+            : `No symbols in "${sectorSegmentLabel}" for this universe.`
+        );
+      }
+      if (!isBusinessLifecycle && selectedSector === 'all') {
+        throw new Error('Select a sector or subsector first.');
+      }
+
+      let yahooRows: unknown[] = [];
+      let yahooError = '';
+      try {
+        yahooRows = await fetchFinancialsBatchChunked(
+          watchlistApiUrl,
+          rows.map((r) => r.ticker),
+          isBusinessLifecycle ? 1 : 8
+        );
+      } catch (err) {
+        yahooError = err instanceof Error ? err.message : String(err);
+      }
+      const dataBlock =
+        isBusinessLifecycle && selectedRow
+          ? buildBusinessLifecycleDataBlock(selectedRow, yahooRows, yahooError)
+          : buildIndustryLifecycleDataBlock(sectorSegmentLabel, rows, yahooRows, yahooError);
+      const report = await getIndustryLifecycleAnalysis(subjectLabel, dataBlock, 3600);
+      if (isBusinessLifecycle) {
+        setBusinessLifecycleReport(report);
+      } else {
+        setIndustryLifecycleReport(report);
+        setIndustryLifecycleReportKind('industry');
+      }
+    } catch (err) {
+      if (insightTarget === 'ticker') {
+        setBusinessLifecycleReport(null);
+      } else {
+        setIndustryLifecycleReport(null);
+      }
+      setIndustryLifecycleError(
+        err instanceof Error ? err.message : 'Could not generate lifecycle analysis.'
+      );
+    } finally {
+      setIndustryLifecycleLoading(false);
+    }
+  }, [
+    marketUniverse,
+    insightTarget,
+    selectedRow,
+    selectedSector,
+    sectorSegmentRows,
+    sectorSegmentLabel,
+    watchlistUniverseDataMissing,
+    watchlistApiUrl,
+  ]);
+
+  const handleLeadershipLifecycleAnalysis = useCallback(async () => {
+    if (marketUniverse === 'forex') {
+      setIndustryLifecycleError('Leadership lifecycle analysis is for equity tickers only.');
+      return;
+    }
+    if (watchlistUniverseDataMissing) {
+      setIndustryLifecycleError('Load a watchlist snapshot before generating leadership lifecycle analysis.');
+      return;
+    }
+    if (!selectedRow) {
+      setIndustryLifecycleError('Select a ticker first.');
+      return;
+    }
+
+    setIndustryLifecycleLoading(true);
+    setIndustryLifecycleError('');
+    try {
+      let yahooRows: unknown[] = [];
+      let yahooError = '';
+      try {
+        yahooRows = await fetchFinancialsBatchChunked(watchlistApiUrl, [selectedRow.ticker], 1);
+      } catch (err) {
+        yahooError = err instanceof Error ? err.message : String(err);
+      }
+      const dataBlock = buildLeadershipLifecycleDataBlock(selectedRow, yahooRows, yahooError);
+      const leaderName =
+        String((yahooRows[0] as Record<string, unknown> | undefined)?.leader_name || selectedRow.leader_name || '').trim();
+      const subjectLabel = `${selectedRow.ticker} / ${selectedRow.company || selectedRow.ticker}${
+        leaderName ? ` / ${leaderName}` : ''
+      }`;
+      const report = await getLeadershipLifecycleAnalysis(subjectLabel, dataBlock, 3600);
+      setIndustryLifecycleReport(report);
+      setIndustryLifecycleReportKind('leadership');
+    } catch (err) {
+      setIndustryLifecycleReport(null);
+      setIndustryLifecycleError(
+        err instanceof Error ? err.message : 'Could not generate leadership lifecycle analysis.'
+      );
+    } finally {
+      setIndustryLifecycleLoading(false);
+    }
+  }, [marketUniverse, selectedRow, watchlistUniverseDataMissing, watchlistApiUrl]);
+
+  const hasCurrentGrowthRiskTarget =
+    (insightTarget === 'ticker' && selectedRow) || (insightTarget === 'sector' && selectedSector !== 'all');
+  const showGeneratedReportsPanel =
+    marketUniverse !== 'forex' &&
+    !watchlistUniverseDataMissing &&
+    (Boolean(hasCurrentGrowthRiskTarget) ||
+      growthRiskDashboard != null ||
+      businessLifecycleReport != null ||
+      industryLifecycleReport != null ||
+      growthRiskDashboardLoading ||
+      industryLifecycleLoading);
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
@@ -1869,42 +3035,235 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
           ) : null}
 
           {universeReady && marketUniverse !== 'forex' && !watchlistUniverseDataMissing ? (
-            <div className="max-w-2xl mx-auto text-left">
-              <label className="block text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1.5">
-                Ticker
-                {marketUniverse !== 'none' && marketUniverse !== 'watchlist' ? (
-                  <span className="text-indigo-200/70 font-semibold normal-case tracking-normal">
-                    {' '}
-                    ({AI_UNIVERSE_LABELS[marketUniverse]})
-                  </span>
-                ) : null}
-              </label>
-              <select
-                value={marketTickerSelectValue}
-                disabled={activeRowsLoading || companyOptions.length === 0}
-                onChange={(e) => {
-                  const t = e.target.value;
-                  if (!t) {
-                    setSymbol('');
-                    setSelectedRowTicker('');
-                    setSelectedCompanyTicker('all');
-                    return;
-                  }
-                  setSymbol(t);
-                  setSelectedRowTicker(t);
-                  setSelectedCompanyTicker(t);
-                }}
-                className="w-full px-3 py-2.5 rounded-xl border border-white/25 bg-white/15 text-white text-sm font-semibold focus:ring-2 focus:ring-emerald-400/50 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <option value="" className="text-slate-900">
-                  {activeRowsLoading ? 'Loading symbols…' : 'Select a ticker…'}
-                </option>
-                {companyOptions.map((c) => (
-                  <option key={c.ticker} value={c.ticker} className="text-slate-900">
-                    {c.label}
-                  </option>
-                ))}
-              </select>
+            <div className="max-w-2xl mx-auto text-left space-y-3">
+              <div>
+                <label className="block text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1.5">
+                  Report target
+                </label>
+                <div className="grid grid-cols-2 gap-2 rounded-2xl border border-white/20 bg-white/10 p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInsightTarget('ticker');
+                      setInsightScope('Ticker');
+                    }}
+                    className={`rounded-xl px-3 py-2 text-xs font-black uppercase tracking-widest transition-all ${
+                      insightTarget === 'ticker'
+                        ? 'bg-white text-indigo-900 shadow'
+                        : 'text-indigo-100 hover:bg-white/10'
+                    }`}
+                  >
+                    Single ticker
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInsightTarget('sector');
+                      setInsightScope('Sector');
+                      setSignalAnalysis(null);
+                    }}
+                    className={`rounded-xl px-3 py-2 text-xs font-black uppercase tracking-widest transition-all ${
+                      insightTarget === 'sector'
+                        ? 'bg-white text-indigo-900 shadow'
+                        : 'text-indigo-100 hover:bg-white/10'
+                    }`}
+                  >
+                    Sector / subsector
+                  </button>
+                </div>
+              </div>
+
+              {insightTarget === 'ticker' ? (
+                <div>
+                  <label className="block text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1.5">
+                    Ticker
+                    {marketUniverse !== 'none' && marketUniverse !== 'watchlist' ? (
+                      <span className="text-indigo-200/70 font-semibold normal-case tracking-normal">
+                        {' '}
+                        ({AI_UNIVERSE_LABELS[marketUniverse]})
+                      </span>
+                    ) : null}
+                  </label>
+                  <select
+                    value={marketTickerSelectValue}
+                    disabled={activeRowsLoading || companyOptions.length === 0}
+                    onChange={(e) => {
+                      const t = e.target.value;
+                      if (!t) {
+                        setSymbol('');
+                        setSelectedRowTicker('');
+                        setSelectedCompanyTicker('all');
+                        return;
+                      }
+                      setInsightTarget('ticker');
+                      setSymbol(t);
+                      setSelectedRowTicker(t);
+                      setSelectedCompanyTicker(t);
+                    }}
+                    className="w-full px-3 py-2.5 rounded-xl border border-white/25 bg-white/15 text-white text-sm font-semibold focus:ring-2 focus:ring-emerald-400/50 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="" className="text-slate-900">
+                      {activeRowsLoading ? 'Loading symbols…' : 'Select a ticker…'}
+                    </option>
+                    {companyOptions.map((c) => (
+                      <option key={c.ticker} value={c.ticker} className="text-slate-900">
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                  <label className="block text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1.5">
+                    Main sector
+                  </label>
+                  <select
+                    value={selectedSector}
+                    disabled={activeRowsLoading || sectorOptions.length === 0}
+                    onChange={(e) => {
+                      setInsightTarget('sector');
+                      setSelectedSector(e.target.value);
+                      setSelectedSubsector('all');
+                      setSelectedRowTicker('');
+                      setSelectedCompanyTicker('all');
+                      setSignalAnalysis(null);
+                    }}
+                    className="w-full px-3 py-2.5 rounded-xl border border-white/25 bg-white/15 text-white text-sm font-semibold focus:ring-2 focus:ring-emerald-400/50 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="all" className="text-slate-900">
+                      {activeRowsLoading ? 'Loading sectors…' : 'Select main sector…'}
+                    </option>
+                    {sectorOptions.map((s) => (
+                      <option key={s} value={s} className="text-slate-900">
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1.5">
+                      Subsector from selected main sector
+                    </label>
+                    <select
+                      value={selectedSubsector}
+                      disabled={activeRowsLoading || selectedSector === 'all' || subsectorOptions.length === 0}
+                      onChange={(e) => {
+                        setInsightTarget('sector');
+                        setSelectedSubsector(e.target.value);
+                        setSelectedRowTicker('');
+                        setSelectedCompanyTicker('all');
+                        setSignalAnalysis(null);
+                      }}
+                      className="w-full px-3 py-2.5 rounded-xl border border-white/25 bg-white/15 text-white text-sm font-semibold focus:ring-2 focus:ring-emerald-400/50 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="all" className="text-slate-900">
+                        {selectedSector === 'all'
+                          ? 'Select a sector first'
+                          : subsectorOptions.length === 0
+                            ? 'No subsectors in this sector'
+                            : 'All subsectors in this sector'}
+                      </option>
+                      {subsectorOptions.map((s) => (
+                        <option key={s} value={s} className="text-slate-900">
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedSector !== 'all' ? (
+                      <p className="mt-1 text-[10px] text-indigo-200/85">
+                        {sectorSegmentRows.length} symbol{sectorSegmentRows.length === 1 ? '' : 's'} selected for{' '}
+                        <span className="font-semibold text-white">{sectorSegmentLabel}</span>.
+                      </p>
+                    ) : null}
+                    {selectedSector !== 'all' ? (
+                      selectedSectorSubsectorChoices.length > 0 ? (
+                        <div className="mt-2 rounded-xl border border-white/15 bg-white/10 p-2">
+                          <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-indigo-200">
+                            Visible subsectors in {selectedSector}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedSubsector('all');
+                                setSelectedCompanyTicker('all');
+                              }}
+                              className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition-all ${
+                                selectedSubsector === 'all'
+                                  ? 'bg-white text-indigo-900 shadow'
+                                  : 'bg-white/10 text-indigo-100 hover:bg-white/20'
+                              }`}
+                            >
+                              All subsectors ({activeRows.filter((r) => (r.sector || '').trim() === selectedSector).length})
+                            </button>
+                            {selectedSectorSubsectorChoices.map((industry) => (
+                              <button
+                                key={industry.name}
+                                type="button"
+                                onClick={() => {
+                                  setInsightTarget('sector');
+                                  setSelectedSubsector(industry.name);
+                                  setSelectedRowTicker('');
+                                  setSelectedCompanyTicker('all');
+                                  setSignalAnalysis(null);
+                                }}
+                                className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition-all ${
+                                  selectedSubsector === industry.name
+                                    ? 'bg-emerald-400 text-emerald-950 shadow'
+                                    : 'bg-white/10 text-indigo-100 hover:bg-white/20'
+                                }`}
+                              >
+                                {industry.name} ({industry.count})
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-2 rounded-xl border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-[11px] font-semibold text-amber-100">
+                          This sector has no industry/subsector values in the loaded snapshot.
+                        </p>
+                      )
+                    ) : null}
+                  </div>
+                  {subsectorsBySector.length > 0 ? (
+                    <div>
+                      <label className="block text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-1.5">
+                        Quick select subsector by sector
+                      </label>
+                      <select
+                        value={sectorSubsectorSelectValue}
+                        disabled={activeRowsLoading}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          if (!value) return;
+                          const [sector, subsector] = value.split('|||');
+                          setInsightTarget('sector');
+                          setSelectedSector(sector);
+                          setSelectedSubsector(subsector);
+                          setSelectedRowTicker('');
+                          setSelectedCompanyTicker('all');
+                          setSignalAnalysis(null);
+                        }}
+                        className="w-full px-3 py-2.5 rounded-xl border border-white/25 bg-white/15 text-white text-sm font-semibold focus:ring-2 focus:ring-emerald-400/50 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <option value="" className="text-slate-900">
+                          Choose a subsector from any sector…
+                        </option>
+                        {subsectorsBySector.map((group) => (
+                          <optgroup key={group.sector} label={group.sector} className="text-slate-900">
+                            {group.industries.map((industry) => (
+                              <option key={`${group.sector}-${industry.name}`} value={`${group.sector}|||${industry.name}`}>
+                                {industry.name} ({industry.count})
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -1913,27 +3272,28 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               <input
                 type="text"
                 value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-                placeholder="e.g. MSFT or Healthcare"
+                onChange={(e) => {
+                  setInsightTarget('ticker');
+                  setSymbol(e.target.value);
+                }}
+                placeholder={insightTarget === 'sector' ? 'Select a sector above' : 'e.g. MSFT'}
+                disabled={insightTarget === 'sector'}
                 className="flex-1 bg-transparent border-none focus:ring-0 text-white placeholder-indigo-200 px-4 py-3 font-medium uppercase"
               />
               <button
                 disabled={loading}
                 className="bg-emerald-500 hover:bg-emerald-400 text-white px-6 py-3 rounded-xl font-bold transition-all disabled:opacity-50"
               >
-                {loading ? 'Analyzing...' : 'Generate Insight'}
+                {loading ? 'Analyzing...' : insightTarget === 'sector' ? 'Generate Sector Report' : 'Generate Ticker Report'}
               </button>
             </form>
           ) : null}
 
           {universeReady && marketUniverse !== 'forex' ? (
             <p className="text-center text-[11px] text-indigo-200/85 max-w-xl mx-auto leading-relaxed px-2">
-              <span className="font-semibold text-white/95">Ticker insight:</span> pick a row in the table (or type a
-              watchlist ticker above) and use <span className="font-semibold">Generate Insight</span> — analysis is for
-              that symbol only. <span className="font-semibold text-white/95">Whole sector:</span> set{' '}
-              <span className="font-semibold">Filter by sector</span>, then use{' '}
-              <span className="font-semibold">Generate Sector Insight</span> next to the table (not the main insight
-              button). Sector runs use every symbol in that sector, not only rows matching company/risk filters.
+              Choose <span className="font-semibold text-white/95">Single ticker</span> for one company or{' '}
+              <span className="font-semibold text-white/95">Whole sector</span> for a sector aggregate report. Sector
+              reports use every symbol in that sector from the current universe.
             </p>
           ) : null}
         </div>
@@ -2074,10 +3434,13 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             <div className="max-h-80 overflow-auto border border-slate-100 rounded-xl">
               <div className="p-3 border-b border-slate-100 bg-slate-50 flex flex-col md:flex-row gap-3 md:items-end">
                 <div className="min-w-[220px]">
-                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Filter by sector</label>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Filter by main sector</label>
                   <select
                     value={selectedSector}
-                    onChange={(e) => setSelectedSector(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedSector(e.target.value);
+                      setSelectedSubsector('all');
+                    }}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 bg-white"
                   >
                     <option value="all">All sectors</option>
@@ -2086,6 +3449,91 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                     ))}
                   </select>
                 </div>
+                <div className="min-w-[220px]">
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Filter by sector subsector</label>
+                  <select
+                    value={selectedSubsector}
+                    disabled={selectedSector === 'all' || subsectorOptions.length === 0}
+                    onChange={(e) => {
+                      setSelectedSubsector(e.target.value);
+                      setSelectedCompanyTicker('all');
+                    }}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 bg-white disabled:opacity-50"
+                  >
+                    <option value="all">All subsectors in this sector</option>
+                    {subsectorOptions.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+                {subsectorsBySector.length > 0 ? (
+                  <div className="min-w-[260px]">
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Pick subsector by sector</label>
+                    <select
+                      value={sectorSubsectorSelectValue}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (!value) return;
+                        const [sector, subsector] = value.split('|||');
+                        setSelectedSector(sector);
+                        setSelectedSubsector(subsector);
+                        setSelectedCompanyTicker('all');
+                      }}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 bg-white"
+                    >
+                      <option value="">Choose subsector…</option>
+                      {subsectorsBySector.map((group) => (
+                        <optgroup key={group.sector} label={group.sector}>
+                          {group.industries.map((industry) => (
+                            <option key={`${group.sector}-${industry.name}`} value={`${group.sector}|||${industry.name}`}>
+                              {industry.name} ({industry.count})
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+                {selectedSector !== 'all' && selectedSectorSubsectorChoices.length > 0 ? (
+                  <div className="basis-full rounded-xl border border-slate-200 bg-white p-3">
+                    <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      Visible subsectors in {selectedSector}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedSubsector('all');
+                          setSelectedCompanyTicker('all');
+                        }}
+                        className={`rounded-full border px-3 py-1.5 text-[11px] font-bold ${
+                          selectedSubsector === 'all'
+                            ? 'border-indigo-600 bg-indigo-600 text-white'
+                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        All subsectors ({activeRows.filter((r) => (r.sector || '').trim() === selectedSector).length})
+                      </button>
+                      {selectedSectorSubsectorChoices.map((industry) => (
+                        <button
+                          key={industry.name}
+                          type="button"
+                          onClick={() => {
+                            setSelectedSubsector(industry.name);
+                            setSelectedCompanyTicker('all');
+                          }}
+                          className={`rounded-full border px-3 py-1.5 text-[11px] font-bold ${
+                            selectedSubsector === industry.name
+                              ? 'border-emerald-600 bg-emerald-600 text-white'
+                              : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {industry.name} ({industry.count})
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="min-w-[260px]">
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Filter by company</label>
                   <select
@@ -2130,11 +3578,14 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                 </p>
                 <button
                   type="button"
-                  onClick={handleSectorAnalyze}
+                  onClick={() => {
+                    setInsightTarget('sector');
+                    void handleSectorAnalyze();
+                  }}
                   disabled={loading || selectedSector === 'all'}
                   className="px-3 py-2 rounded-lg text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {loading ? 'Analyzing...' : 'Generate Sector Insight'}
+                  {loading ? 'Analyzing...' : selectedSubsector === 'all' ? 'Generate Sector Report' : 'Generate Subsector Report'}
                 </button>
               </div>
               <table className="w-full text-xs min-w-[1320px]">
@@ -2182,6 +3633,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                       key={r.ticker}
                       className={`border-t border-slate-100 cursor-pointer ${selectedRowTicker === r.ticker ? 'bg-emerald-50' : 'hover:bg-slate-50'}`}
                       onClick={() => {
+                        setInsightTarget('ticker');
                         setSelectedRowTicker(r.ticker);
                         setSymbol(r.ticker);
                       }}
@@ -2190,7 +3642,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                       <td className="px-3 py-2 font-black text-slate-800">{r.ticker}</td>
                       <td className="px-3 py-2 text-slate-700">{r.company || '—'}</td>
                       <td className="px-3 py-2 text-slate-600">{r.sector || '—'}</td>
-                      <td className="px-3 py-2 text-slate-600">{r.industry || '—'}</td>
+                      <td className="px-3 py-2 text-slate-600">{inferredSubsector(r) || '—'}</td>
                       <td className="px-3 py-2 text-slate-600">{r.location || '—'}</td>
                       <td className="px-3 py-2 text-right font-mono">{r.current_price != null ? `$${r.current_price.toFixed(2)}` : '—'}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatStatementNum(r.total_assets)}</td>
@@ -2242,6 +3694,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             </div>
 
             {marketUniverse !== 'forex' &&
+              insightTarget === 'ticker' &&
               selectedRow &&
               !watchlistUniverseDataMissing &&
               rankedRows.length > 0 && (
@@ -2461,38 +3914,19 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
           <div>
             <h3 className="text-slate-900 font-bold uppercase tracking-widest text-sm">Market Insights</h3>
             <p className="text-xs text-slate-500 mt-1 max-w-2xl">
-              Top 10 and low 10 by a composite score: IV vs price (when available), IV upside %, Torchlight, risk summary, Sharpe/Sortino, and lower volatility. Uses the filtered watchlist rows above.
+              Ranked companies by composite score: IV vs price (when available), IV upside %, Torchlight, risk summary, Sharpe/Sortino, and lower volatility. Scope:{' '}
+              <span className="font-bold text-slate-700">{marketInsightScopeLabel}</span> ({marketInsightRows.length} rows).
+              {selectedSector !== 'all'
+                ? ' Only tickers from the selected sector/subsector are included.'
+                : ' Choose a sector or subsector above to populate this section.'}
             </p>
           </div>
           <div className="flex flex-col gap-2 shrink-0">
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={exportInsightTop10}
-                  onChange={(e) => setExportInsightTop10(e.target.checked)}
-                  className="rounded border-slate-300"
-                />
-                Include top 10 in CSV
-              </label>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={exportInsightLow10}
-                  onChange={(e) => setExportInsightLow10(e.target.checked)}
-                  className="rounded border-slate-300"
-                />
-                Include low 10 in CSV
-              </label>
-            </div>
             <button
               type="button"
-              disabled={!exportInsightTop10 && !exportInsightLow10}
+              disabled={marketInsights.ranked.length === 0}
               onClick={() =>
-                downloadTopLowInsightsCsv(marketInsights.top10, marketInsights.low10, {
-                  includeTop: exportInsightTop10,
-                  includeLow: exportInsightLow10,
-                })
+                downloadMarketInsightsCsv(marketInsights.ranked, marketInsightScopeLabel)
               }
               className="px-4 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -2500,13 +3934,19 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             </button>
           </div>
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-x-auto">
+        {selectedSector === 'all' ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+            Select a main sector, or choose a subsector, to show Market Insights for that group only.
+          </div>
+        ) : (
+        <div className="overflow-x-auto">
           <div className="border border-emerald-100 rounded-xl overflow-hidden min-w-[640px]">
             <div className="px-3 py-2 bg-emerald-50 border-b border-emerald-100 text-emerald-800 text-xs font-black uppercase tracking-widest">
-              Top 10 (highest composite)
+              Ranked companies (highest composite first)
             </div>
             <table className="w-full table-fixed text-xs min-w-[600px] border-collapse">
               <colgroup>
+                <col className="w-[3.25rem]" />
                 <col className="w-[4.75rem]" />
                 <col />
                 <col className="w-[4.5rem]" />
@@ -2518,6 +3958,9 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               </colgroup>
               <thead className="bg-slate-50">
                 <tr>
+                  <th className="px-2 py-2.5 text-right font-black text-slate-600 text-[10px] whitespace-nowrap">
+                    Rank
+                  </th>
                   <th className="px-2 py-2.5 text-left font-black text-slate-600 text-[10px] leading-tight">
                     Ticker
                   </th>
@@ -2543,8 +3986,11 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                 </tr>
               </thead>
               <tbody>
-                {marketInsights.top10.map((x) => (
-                  <tr key={`top-${x.row.ticker}`} className="border-t border-slate-100">
+                {marketInsights.ranked.map((x, idx) => (
+                  <tr key={`ranked-${x.row.ticker}`} className="border-t border-slate-100">
+                    <td className="px-2 py-2.5 text-right font-black text-slate-500 text-[10px] tabular-nums whitespace-nowrap align-middle">
+                      {idx + 1}
+                    </td>
                     <td
                       className="px-2 py-2.5 font-semibold font-mono text-[10px] leading-tight text-slate-900 whitespace-nowrap align-middle overflow-hidden text-ellipsis"
                       title={x.row.ticker}
@@ -2580,86 +4026,8 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               </tbody>
             </table>
           </div>
-          <div className="border border-rose-100 rounded-xl overflow-hidden min-w-[640px]">
-            <div className="px-3 py-2 bg-rose-50 border-b border-rose-100 text-rose-800 text-xs font-black uppercase tracking-widest">
-              Low 10 (lowest composite)
-            </div>
-            <table className="w-full table-fixed text-xs min-w-[600px] border-collapse">
-              <colgroup>
-                <col className="w-[4.75rem]" />
-                <col />
-                <col className="w-[4.5rem]" />
-                <col className="w-[4.25rem]" />
-                <col className="w-[3.5rem]" />
-                <col className="w-[4rem]" />
-                <col className="w-[3.25rem]" />
-                <col className="w-[3.5rem]" />
-              </colgroup>
-              <thead className="bg-slate-50">
-                <tr>
-                  <th className="px-2 py-2.5 text-left font-black text-slate-600 text-[10px] leading-tight">
-                    Ticker
-                  </th>
-                  <th className="px-3 py-2.5 text-left font-black text-slate-600 min-w-0">Company</th>
-                  <th className="px-2 py-2.5 text-right font-black text-slate-600 text-[10px] whitespace-nowrap">
-                    Composite
-                  </th>
-                  <th className="px-2 py-2.5 text-right font-black text-slate-600 text-[10px] whitespace-nowrap">
-                    IV $
-                  </th>
-                  <th className="px-2 py-2.5 text-right font-black text-slate-600 text-[10px] whitespace-nowrap">
-                    Torch
-                  </th>
-                  <th className="px-2 py-2.5 text-right font-black text-slate-600 text-[10px] whitespace-nowrap">
-                    Upside
-                  </th>
-                  <th className="px-2 py-2.5 text-right font-black text-slate-600 text-[10px] whitespace-nowrap">
-                    Risk
-                  </th>
-                  <th className="px-2 py-2.5 pr-4 text-right font-black text-slate-600 text-[10px] whitespace-nowrap">
-                    Sharpe
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {marketInsights.low10.map((x) => (
-                  <tr key={`low-${x.row.ticker}`} className="border-t border-slate-100">
-                    <td
-                      className="px-2 py-2.5 font-semibold font-mono text-[10px] leading-tight text-slate-900 whitespace-nowrap align-middle overflow-hidden text-ellipsis"
-                      title={x.row.ticker}
-                    >
-                      {x.row.ticker}
-                    </td>
-                    <td
-                      className="px-3 py-2.5 text-slate-600 min-w-0 truncate align-middle border-l border-slate-100/80"
-                      title={x.row.company || ''}
-                    >
-                      {x.row.company || '—'}
-                    </td>
-                    <td className="px-2 py-2.5 text-right font-black text-rose-700 text-[10px] tabular-nums whitespace-nowrap align-middle">
-                      {x.score.toFixed(1)}
-                    </td>
-                    <td className="px-2 py-2.5 text-right font-mono text-[10px] tabular-nums whitespace-nowrap align-middle">
-                      {x.row.iv_ensemble != null ? `$${x.row.iv_ensemble.toFixed(2)}` : '—'}
-                    </td>
-                    <td className="px-2 py-2.5 text-right text-[10px] tabular-nums whitespace-nowrap align-middle">
-                      {x.row.torchlight_score != null ? x.row.torchlight_score.toFixed(1) : '—'}
-                    </td>
-                    <td className="px-2 py-2.5 text-right text-[10px] tabular-nums whitespace-nowrap align-middle">
-                      {x.row.iv_upside_pct != null ? `${x.row.iv_upside_pct.toFixed(2)}%` : '—'}
-                    </td>
-                    <td className="px-2 py-2.5 text-right text-[10px] tabular-nums whitespace-nowrap align-middle">
-                      {x.row.risk_summary_score != null ? x.row.risk_summary_score.toFixed(1) : '—'}
-                    </td>
-                    <td className="px-2 py-2.5 pr-4 text-right text-[10px] tabular-nums whitespace-nowrap align-middle">
-                      {x.row.risk_sharpe != null ? x.row.risk_sharpe.toFixed(2) : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         </div>
+        )}
       </div>
       </>
       ) : null}
@@ -2675,6 +4043,17 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                 {growthRiskDashboardLoading ? 'Dashboard LLM loading…' : 'AI narrative loading…'}
               </span>
             ) : null}
+          </div>
+          <div className="rounded-2xl border-2 border-indigo-300 bg-indigo-50/95 p-5 shadow-sm ring-1 ring-indigo-200/60">
+            <h4 className="text-indigo-900 font-black text-[10px] uppercase tracking-widest mb-2">
+              Executive signal read
+            </h4>
+            <p className="text-indigo-950 font-black text-sm leading-snug mb-3">{signalAnalysis.overview.headline}</p>
+            <ul className="text-sm text-indigo-900 space-y-1.5 list-disc pl-5 leading-relaxed">
+              {signalAnalysis.overview.bullets.map((line, i) => (
+                <li key={`overview-${i}`}>{line}</li>
+              ))}
+            </ul>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="rounded-2xl border-2 border-emerald-400 bg-emerald-50/95 p-5 shadow-sm ring-1 ring-emerald-200/60">
@@ -2725,45 +4104,79 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
         </div>
       )}
 
-      {marketUniverse !== 'forex' &&
-        !watchlistUniverseDataMissing &&
-        (selectedRow || selectedSector !== 'all') && (
+      {showGeneratedReportsPanel && (
         <div className="max-w-4xl mx-auto space-y-4 animate-in fade-in duration-300">
           <div className="rounded-2xl border-2 border-slate-200 bg-white p-5 shadow-sm space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="space-y-2 min-w-0 flex-1">
                 <h3 className="text-xs font-black uppercase tracking-widest text-slate-700">
-                  Growth &amp; risk ticker report (LLM)
+                  Growth &amp; risk {insightTarget === 'sector' ? 'sector' : 'ticker'} report (LLM)
                 </h3>
                 <p className="text-[11px] text-slate-600 leading-relaxed max-w-3xl">
                   Top <span className="font-bold">5</span> growth drivers and <span className="font-bold">5</span> risk
                   factors, grouped by category, with dashboard summaries for{' '}
-                  {selectedRow ? (
+                  {insightTarget === 'ticker' && selectedRow ? (
                     <>
                       ticker <span className="font-mono font-bold text-slate-900">{selectedRow.ticker}</span>
                     </>
                   ) : (
                     <>
-                      sector <span className="font-bold text-slate-900">{selectedSector}</span>
+                      segment <span className="font-bold text-slate-900">{sectorSegmentLabel}</span>
                     </>
                   )}
-                  . Uses watchlist data only. Instant IV/risk signals stay in the section above when a row is selected.
+                  . Uses watchlist values first, then news sentiment and today’s FRED macro context when available. You can
+                  leave this page while it runs; the result is kept in memory for this browser session.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={handleGrowthRiskDashboard}
-                disabled={growthRiskDashboardLoading}
-                className="shrink-0 px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {growthRiskDashboardLoading ? 'Generating…' : 'Generate report'}
-              </button>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleGrowthRiskDashboard}
+                  disabled={growthRiskDashboardLoading || !hasCurrentGrowthRiskTarget}
+                  className="px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {growthRiskDashboardLoading ? 'Generating…' : 'Generate report'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleIndustryLifecycleAnalysis}
+                  disabled={
+                    industryLifecycleLoading ||
+                    (insightTarget === 'ticker' ? !selectedRow : selectedSector === 'all')
+                  }
+                  className="px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest bg-indigo-700 text-white hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {industryLifecycleLoading
+                    ? 'Analyzing…'
+                    : insightTarget === 'ticker'
+                      ? 'Business lifecycle'
+                      : 'Industry lifecycle'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLeadershipLifecycleAnalysis}
+                  disabled={industryLifecycleLoading || !selectedRow || insightTarget !== 'ticker'}
+                  className="px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest bg-violet-700 text-white hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Leadership lifecycle
+                </button>
+              </div>
             </div>
             {growthRiskDashboardLoading ? (
-              <p className="text-[11px] font-bold text-indigo-600">Generating dashboard…</p>
+              <p className="text-[11px] font-bold text-indigo-600">
+                Generating dashboard in the background. You can use another platform tab and come back to this result.
+              </p>
+            ) : null}
+            {industryLifecycleLoading ? (
+              <p className="text-[11px] font-bold text-indigo-600">
+                Collecting Yahoo lifecycle fields for the selected {industryLifecycleReportKind === 'leadership' ? 'leader/ticker' : insightTarget === 'ticker' ? 'ticker' : 'segment'} and classifying its lifecycle stage.
+              </p>
             ) : null}
             {growthRiskDashboardError ? (
               <p className="text-xs text-rose-600 font-medium">{growthRiskDashboardError}</p>
+            ) : null}
+            {industryLifecycleError ? (
+              <p className="text-xs text-rose-600 font-medium">{industryLifecycleError}</p>
             ) : null}
             {growthRiskDashboard ? (
               <div id="growth-risk-llm-report" className="space-y-6 pt-1 border-t border-slate-100 scroll-mt-4">
@@ -2771,7 +4184,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                   <span className="font-black text-slate-500 uppercase text-[10px] tracking-widest">Subject</span>
                   <span className="font-mono font-black text-slate-900">
                     {growthRiskDashboard.subjectLabel ||
-                      (growthRiskDashboard.scope === 'sector' ? selectedSector : selectedRow?.ticker)}
+                      (growthRiskDashboard.scope === 'sector' ? sectorSegmentLabel : selectedRow?.ticker)}
                   </span>
                   <span className="text-[10px] font-bold uppercase text-slate-400 px-2 py-0.5 rounded bg-slate-100">
                     {growthRiskDashboard.scope === 'sector' ? 'Sector view' : 'Ticker view'}
@@ -2967,6 +4380,417 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                 </div>
               </div>
             ) : null}
+            {businessLifecycleReport ? (
+              <div className="space-y-4 pt-4 border-t border-emerald-100">
+                <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/70 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">
+                        Instrument Level Lifecycle Analysis
+                      </p>
+                      <h4 className="mt-1 text-xl font-black text-emerald-950">
+                        {businessLifecycleReport.subjectLabel}
+                      </h4>
+                      <p className="mt-2 text-sm text-emerald-950 leading-relaxed">
+                        {businessLifecycleReport.summary}
+                      </p>
+                    </div>
+                    <div className="rounded-xl bg-white px-4 py-3 border border-emerald-200 text-right shadow-sm">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Business stage</p>
+                      <p className="text-2xl font-black text-emerald-900">{businessLifecycleReport.stage}</p>
+                      <p className="text-[11px] font-bold text-slate-500">{businessLifecycleReport.confidence}% confidence</p>
+                    </div>
+                  </div>
+                  <div className="mt-5 rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">
+                        Business lifecycle stage map
+                      </p>
+                      <span className={`rounded-full border px-3 py-1 text-[11px] font-black ${lifecycleStageClass(businessLifecycleReport.stage)}`}>
+                        {businessLifecycleReport.stage}
+                      </span>
+                    </div>
+                    <div className="relative pt-5">
+                      <div className="absolute left-0 right-0 top-7 h-1.5 rounded-full bg-slate-200" />
+                      <div className="absolute left-0 top-7 h-1.5 rounded-full bg-emerald-500" style={{ width: `${lifecycleStagePosition(businessLifecycleReport.stage)}%` }} />
+                      <div className="absolute top-5 h-5 w-5 -translate-x-1/2 rounded-full border-4 border-white bg-emerald-700 shadow" style={{ left: `${lifecycleStagePosition(businessLifecycleReport.stage)}%` }} />
+                      <div className="relative grid grid-cols-4 gap-2 pt-6">
+                        {LIFECYCLE_STAGES.map((stage) => (
+                          <div key={`biz-${stage}`} className={`rounded-xl border px-2 py-2 text-center text-[10px] font-black uppercase tracking-wide ${stage === businessLifecycleReport.stage ? lifecycleStageClass(stage) : lifecycleStageMutedClass(stage)}`}>
+                            {stage}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="rounded-xl bg-white border border-emerald-100 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Strategy</p>
+                      <p className="text-sm font-semibold text-slate-800 leading-relaxed">{businessLifecycleReport.strategy}</p>
+                    </div>
+                    <div className="rounded-xl bg-white border border-emerald-100 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Ticker + business lifecycle combo</p>
+                      <p className="text-sm font-semibold text-slate-800 leading-relaxed">{businessLifecycleReport.subSectorCombo}</p>
+                    </div>
+                  </div>
+                </div>
+                {businessLifecycleReport.signals.length > 0 ? (
+                  <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+                    <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-600">
+                      Business lifecycle signals
+                    </div>
+                    <div className="p-4 space-y-2">
+                      {businessLifecycleReport.signals.map((signal, i) => (
+                        <div key={`biz-signal-${i}`} className="rounded-lg border border-slate-100 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-black text-slate-900 text-xs">{signal.metric}</span>
+                            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-black ${lifecycleStageMutedClass(signal.stageBias)}`}>
+                              {signal.stageBias}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs font-semibold text-slate-700">{signal.value}</p>
+                          <p className="mt-1 text-xs text-slate-600 leading-relaxed">{signal.signal}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-2">Business lifecycle explanation</p>
+                    <p className="text-sm text-emerald-950 leading-relaxed whitespace-pre-wrap">{businessLifecycleReport.explanation || 'No explanation returned.'}</p>
+                  </div>
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 mb-2">Business lifecycle rotation</p>
+                    <p className="text-sm text-amber-950 leading-relaxed whitespace-pre-wrap">{businessLifecycleReport.lifecycleRotation || 'No rotation note returned.'}</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            {industryLifecycleReport ? (
+              <div className="space-y-4 pt-4 border-t border-indigo-100">
+                <div className="rounded-2xl border-2 border-indigo-200 bg-indigo-50/70 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">
+                        {industryLifecycleReportKind === 'leadership'
+                          ? 'Leadership Lifecycle Analysis'
+                          : industryLifecycleReportKind === 'business'
+                          ? 'Business Lifecycle Analysis'
+                          : 'Industry Lifecycle Analysis'}
+                      </p>
+                      <h4 className="mt-1 text-xl font-black text-indigo-950">
+                        {industryLifecycleReport.subjectLabel}
+                      </h4>
+                      <p className="mt-2 text-sm text-indigo-950 leading-relaxed">
+                        {industryLifecycleReport.summary}
+                      </p>
+                      {industryLifecycleReportKind === 'leadership' &&
+                      (industryLifecycleReport.leaderName || industryLifecycleReport.leaderTitle) ? (
+                        <p className="mt-2 text-xs font-bold text-indigo-800">
+                          Leader:{' '}
+                          <span className="text-indigo-950">
+                            {industryLifecycleReport.leaderName || 'Unknown'}
+                            {industryLifecycleReport.leaderTitle ? ` — ${industryLifecycleReport.leaderTitle}` : ''}
+                          </span>
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="rounded-xl bg-white px-4 py-3 border border-indigo-200 text-right shadow-sm">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Stage</p>
+                      <p className="text-2xl font-black text-indigo-900">{industryLifecycleReport.stage}</p>
+                      <p className="text-[11px] font-bold text-slate-500">
+                        {industryLifecycleReport.confidence}% confidence
+                      </p>
+                      {industryLifecycleReportKind === 'leadership' && industryLifecycleReport.leadershipSentiment ? (
+                        <span
+                          className={`mt-2 inline-flex rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-widest ${leadershipSentimentClass(
+                            industryLifecycleReport.leadershipSentiment,
+                          )}`}
+                        >
+                          {industryLifecycleReport.leadershipSentiment} sentiment
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="mt-5 rounded-2xl border border-indigo-200 bg-white p-4 shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">
+                        Lifecycle stage map
+                      </p>
+                      <span className={`rounded-full border px-3 py-1 text-[11px] font-black ${lifecycleStageClass(industryLifecycleReport.stage)}`}>
+                        {industryLifecycleReport.stage}
+                      </span>
+                    </div>
+                    <div className="relative pt-5">
+                      <div className="absolute left-0 right-0 top-7 h-1.5 rounded-full bg-slate-200" />
+                      <div
+                        className="absolute left-0 top-7 h-1.5 rounded-full bg-indigo-500"
+                        style={{ width: `${lifecycleStagePosition(industryLifecycleReport.stage)}%` }}
+                      />
+                      <div
+                        className="absolute top-5 h-5 w-5 -translate-x-1/2 rounded-full border-4 border-white bg-indigo-700 shadow"
+                        style={{ left: `${lifecycleStagePosition(industryLifecycleReport.stage)}%` }}
+                        title={industryLifecycleReport.stage}
+                      />
+                      <div className="relative grid grid-cols-4 gap-2 pt-6">
+                        {LIFECYCLE_STAGES.map((stage) => (
+                          <div key={stage} className="text-center">
+                            <div
+                              className={`rounded-xl border px-2 py-2 text-[10px] font-black uppercase tracking-wide ${
+                                stage === industryLifecycleReport.stage
+                                  ? lifecycleStageClass(stage)
+                                  : lifecycleStageMutedClass(stage)
+                              }`}
+                            >
+                              {stage}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-4">
+                      <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-500">
+                        <span>Classification confidence</span>
+                        <span>{industryLifecycleReport.confidence}%</span>
+                      </div>
+                      <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-indigo-600"
+                          style={{ width: `${Math.max(0, Math.min(100, industryLifecycleReport.confidence))}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="rounded-xl bg-white border border-indigo-100 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                        Strategy
+                      </p>
+                      <p className="text-sm font-semibold text-slate-800 leading-relaxed">
+                        {industryLifecycleReport.strategy}
+                      </p>
+                    </div>
+                    <div className="rounded-xl bg-white border border-indigo-100 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                        {industryLifecycleReportKind === 'business'
+                          ? 'Ticker + business lifecycle combo'
+                          : industryLifecycleReportKind === 'leadership'
+                            ? 'Ticker + leader lifecycle combo'
+                          : 'Lifecycle + subsector combo'}
+                      </p>
+                      <p className="text-sm font-semibold text-slate-800 leading-relaxed">
+                        {industryLifecycleReport.subSectorCombo}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {industryLifecycleReport.signals.length > 0 ? (
+                  <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+                    <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-600 flex flex-wrap items-center justify-between gap-2">
+                      <span>Data signals used for classification</span>
+                      <span>{industryLifecycleReport.signals.length} signals</span>
+                    </div>
+                    <div className="p-4 border-b border-slate-100">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">
+                        Stage bias distribution
+                      </p>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                        {lifecycleSignalBiasCounts(industryLifecycleReport).map(({ stage, count }) => {
+                          const pct = industryLifecycleReport.signals.length
+                            ? Math.round((count / industryLifecycleReport.signals.length) * 100)
+                            : 0;
+                          return (
+                            <div key={stage} className={`rounded-xl border p-3 ${lifecycleStageMutedClass(stage)}`}>
+                              <div className="flex items-baseline justify-between gap-2">
+                                <span className="text-[10px] font-black uppercase">{stage}</span>
+                                <span className="text-lg font-black tabular-nums">{count}</span>
+                              </div>
+                              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/70">
+                                <div className="h-full rounded-full bg-current opacity-70" style={{ width: `${pct}%` }} />
+                              </div>
+                              <p className="mt-1 text-[10px] font-bold opacity-80">{pct}% of signals</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="p-4 border-b border-slate-100">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">
+                        Signal strength bars
+                      </p>
+                      <div className="space-y-2">
+                        {industryLifecycleReport.signals.map((signal, i) => {
+                          const width = Math.round(((i + 1) / Math.max(1, industryLifecycleReport.signals.length)) * 100);
+                          return (
+                            <div key={`${signal.metric}-bar-${i}`} className="grid grid-cols-[8rem_1fr_5.5rem] items-center gap-2 text-[11px]">
+                              <span className="truncate font-bold text-slate-700" title={signal.metric}>{signal.metric}</span>
+                              <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    signal.stageBias === 'Growth'
+                                      ? 'bg-emerald-500'
+                                      : signal.stageBias === 'Maturity'
+                                        ? 'bg-blue-500'
+                                        : signal.stageBias === 'Decline'
+                                          ? 'bg-rose-500'
+                                          : 'bg-amber-400'
+                                  }`}
+                                  style={{ width: `${width}%` }}
+                                />
+                              </div>
+                              <span className="text-right font-black text-slate-600">{signal.stageBias}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs min-w-[680px]">
+                        <thead className="bg-white">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-black text-slate-500">Metric</th>
+                            <th className="px-3 py-2 text-left font-black text-slate-500">Value</th>
+                            <th className="px-3 py-2 text-left font-black text-slate-500">Signal</th>
+                            <th className="px-3 py-2 text-left font-black text-slate-500">Bias</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {industryLifecycleReport.signals.map((signal, i) => (
+                            <tr key={`${signal.metric}-${i}`} className="border-t border-slate-100">
+                              <td className="px-3 py-2 font-bold text-slate-900">{signal.metric}</td>
+                              <td className="px-3 py-2 text-slate-700">{signal.value}</td>
+                              <td className="px-3 py-2 text-slate-600">{signal.signal}</td>
+                              <td className="px-3 py-2 font-black text-indigo-700">{signal.stageBias}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-2">
+                      Explanation layer
+                    </p>
+                    <p className="text-sm text-emerald-950 leading-relaxed whitespace-pre-wrap">
+                      {industryLifecycleReport.explanation || 'No explanation returned.'}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 mb-2">
+                      Lifecycle rotation strategy
+                    </p>
+                    <p className="text-sm text-amber-950 leading-relaxed whitespace-pre-wrap">
+                      {industryLifecycleReport.lifecycleRotation || 'No rotation note returned.'}
+                    </p>
+                  </div>
+                </div>
+
+                {industryLifecycleReportKind === 'leadership' &&
+                (industryLifecycleReport.managementStyle ||
+                  industryLifecycleReport.leadershipSentiment ||
+                  industryLifecycleReport.capitalAllocationStyle ||
+                  industryLifecycleReport.executionQuality ||
+                  industryLifecycleReport.governanceAssessment) ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {industryLifecycleReport.leadershipSentiment ? (
+                      <div className={`rounded-xl border p-4 ${leadershipSentimentClass(industryLifecycleReport.leadershipSentiment)}`}>
+                        <p className="text-[10px] font-black uppercase tracking-widest mb-2">
+                          Leadership sentiment
+                        </p>
+                        <p className="text-2xl font-black">
+                          {industryLifecycleReport.leadershipSentiment}
+                        </p>
+                        <p className="mt-1 text-xs font-semibold opacity-80">
+                          Based on Yahoo management news, governance risk, execution metrics, and market expectations.
+                        </p>
+                      </div>
+                    ) : null}
+                    {industryLifecycleReport.managementStyle ? (
+                      <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-4">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-violet-800 mb-2">
+                          Management style
+                        </p>
+                        <p className="text-sm text-violet-950 leading-relaxed">
+                          {industryLifecycleReport.managementStyle}
+                        </p>
+                      </div>
+                    ) : null}
+                    {industryLifecycleReport.capitalAllocationStyle ? (
+                      <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-sky-800 mb-2">
+                          Capital allocation style
+                        </p>
+                        <p className="text-sm text-sky-950 leading-relaxed">
+                          {industryLifecycleReport.capitalAllocationStyle}
+                        </p>
+                      </div>
+                    ) : null}
+                    {industryLifecycleReport.executionQuality ? (
+                      <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-teal-800 mb-2">
+                          Execution quality
+                        </p>
+                        <p className="text-sm text-teal-950 leading-relaxed">
+                          {industryLifecycleReport.executionQuality}
+                        </p>
+                      </div>
+                    ) : null}
+                    {industryLifecycleReport.governanceAssessment ? (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-600 mb-2">
+                          Governance assessment
+                        </p>
+                        <p className="text-sm text-slate-800 leading-relaxed">
+                          {industryLifecycleReport.governanceAssessment}
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {industryLifecycleReport.eventDetections.length > 0 ? (
+                  <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-violet-800 mb-2">
+                      Event detection
+                    </p>
+                    <ul className="space-y-1.5 text-sm text-violet-950 list-disc pl-5">
+                      {industryLifecycleReport.eventDetections.map((event, i) => (
+                        <li key={`life-event-${i}`}>{event}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+                    {industryLifecycleReportKind === 'leadership'
+                      ? 'Management & governance data needed'
+                      : 'Yahoo Finance data collection prompt'}
+                  </p>
+                  <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">
+                    {industryLifecycleReport.yahooDataPrompt ||
+                      'Collect revenueGrowth, earningsGrowth, grossMargins, profitMargins, operatingMargins, ebitdaMargins, marketCap, enterpriseValue, sharesOutstanding, recommendationMean, targetMeanPrice, averageVolume, industry, sector, and annual revenue/margin history for this segment.'}
+                  </p>
+                  {industryLifecycleReport.missingYahooFields.length > 0 ? (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {industryLifecycleReport.missingYahooFields.map((field) => (
+                        <span
+                          key={field}
+                          className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-slate-600"
+                        >
+                          {field}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       )}
@@ -2978,9 +4802,26 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
       )}
 
       {insight && marketUniverse !== 'forex' && (() => {
+        const reportScope = insightReportMeta?.scope ?? insightScope;
+        const tickerGrowthBullets =
+          reportScope === 'Ticker' && signalAnalysis
+            ? [
+                ...signalAnalysis.iv.bullets,
+                ...signalAnalysis.growthDrivers.bullets,
+                ...signalAnalysis.ctr.bullets,
+              ].slice(0, 6)
+            : null;
+        const tickerRiskBullets =
+          reportScope === 'Ticker' && signalAnalysis
+            ? [...signalAnalysis.risk.bullets, ...signalAnalysis.ctr.bullets].slice(0, 6)
+            : null;
+        const growthBullets = tickerGrowthBullets?.length ? tickerGrowthBullets : insight.pros;
+        const riskBullets = tickerRiskBullets?.length ? tickerRiskBullets : insight.cons;
         const showInsightProsConsColumn =
-          insightScope === 'Sector' ||
-          (insightScope === 'Ticker' && !insightProsConsAreLlmPlaceholder(insight));
+          reportScope === 'Sector' ||
+          (reportScope === 'Ticker' &&
+            ((tickerGrowthBullets != null && tickerGrowthBullets.length > 0) ||
+              !insightProsConsAreLlmPlaceholder(insight)));
         return (
         <div
           className={`grid grid-cols-1 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700 ${
@@ -2992,7 +4833,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             <div className="rounded-2xl border-2 border-slate-200 bg-gradient-to-br from-slate-50 to-white p-6 shadow-sm">
               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">Build</p>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                {insightScope === 'Ticker' && insightReportBuild.display && insightReportBuild.display !== '—' ? (
+                {reportScope === 'Ticker' && insightReportBuild.display && insightReportBuild.display !== '—' ? (
                   <span className="text-3xl font-black font-mono tracking-tight text-slate-900">{insightReportBuild.display}</span>
                 ) : (
                   <span className="text-2xl font-black tracking-tight text-slate-900">
@@ -3004,6 +4845,11 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
                 <span className={`text-2xl font-black ${insightConditionTextClass(insight.sentiment)}`}>
                   {insightConditionDisplayLabel(insight.sentiment)}
                 </span>
+                {loading ? (
+                  <span className="rounded-full bg-indigo-50 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-indigo-700 border border-indigo-100">
+                    Generating new report…
+                  </span>
+                ) : null}
               </div>
             </div>
             <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-100">
@@ -3060,7 +4906,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               </p>
             </div>
 
-            {insightScope === 'Ticker' && insight.extended_report && (
+            {reportScope === 'Ticker' && insight.extended_report && (
               <div className="bg-gradient-to-br from-indigo-50/90 to-white p-8 rounded-2xl shadow-sm border-2 border-indigo-200/80 ring-1 ring-indigo-100">
                 <div className="flex flex-wrap items-baseline justify-between gap-3 mb-4">
                   <h3 className="text-lg font-black text-indigo-950 tracking-tight">Extended report</h3>
@@ -3115,7 +4961,7 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
               </div>
             )}
 
-            {!showInsightProsConsColumn && insightScope === 'Ticker' ? (
+            {!showInsightProsConsColumn && reportScope === 'Ticker' ? (
               <p className="text-xs text-slate-500 border-t border-slate-100 pt-4">
                 Growth/risk driver bullets from the model were omitted because the response did not include usable
                 lists. Use the watchlist signal strip above, the IV / Torchlight / risk tiles, and Market Summary for
@@ -3129,10 +4975,10 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             <div className="bg-emerald-50 p-6 rounded-2xl border border-emerald-100">
               <h4 className="text-emerald-700 font-bold mb-4 flex items-center">
                 <span className="mr-2">🚀</span>{' '}
-                {insightScope === 'Sector' ? 'Growth Drivers (sector)' : 'Growth Drivers'}
+                {reportScope === 'Sector' ? 'Growth Drivers (sector)' : 'Growth Drivers'}
               </h4>
               <ul className="space-y-3">
-                {insight.pros.map((pro, i) => (
+                {growthBullets.map((pro, i) => (
                   <li key={i} className="flex items-start text-sm text-emerald-800">
                     <span className="text-emerald-500 mr-2 mt-0.5">✓</span>
                     {pro}
@@ -3144,10 +4990,10 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ userId }) => {
             <div className="bg-rose-50 p-6 rounded-2xl border border-rose-100">
               <h4 className="text-rose-700 font-bold mb-4 flex items-center">
                 <span className="mr-2">⚠️</span>{' '}
-                {insightScope === 'Sector' ? 'Risk Factors (sector)' : 'Risk Factors'}
+                {reportScope === 'Sector' ? 'Risk Factors (sector)' : 'Risk Factors'}
               </h4>
               <ul className="space-y-3">
-                {insight.cons.map((con, i) => (
+                {riskBullets.map((con, i) => (
                   <li key={i} className="flex items-start text-sm text-rose-800">
                     <span className="text-rose-400 mr-2 mt-0.5">✕</span>
                     {con}

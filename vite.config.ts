@@ -35,6 +35,12 @@ function suppressTsconfigFullReloadPlugin(enabled: boolean): Plugin {
   };
 }
 
+/** Parse WATCHLIST_API_PORT from .env — ignore accidental shell snippets (e.g. `8001 npm run …`). */
+function parseWatchlistApiPort(raw: string | undefined): string {
+  const m = String(raw ?? '').trim().match(/^(\d{2,5})/);
+  return m ? m[1] : '8000';
+}
+
 /** Browser → Vite → FastAPI on 127.0.0.1:8000. Avoids calling 127.0.0.1 from another device when host is 0.0.0.0. */
 /** Yahoo rejects many proxied requests without a normal browser User-Agent */
 function yahooChartProxyOptions(): ProxyOptions {
@@ -148,7 +154,7 @@ export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     const geminiKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
     /** Must match `npm run watchlist-api` (see scripts/watchlist-api.mjs). Default 8000. */
-    const watchlistApiPort = (env.WATCHLIST_API_PORT || '8000').trim();
+    const watchlistApiPort = parseWatchlistApiPort(env.WATCHLIST_API_PORT || process.env.WATCHLIST_API_PORT);
     /**
      * OneDrive/iCloud: polling helps; sync still touches files → extra reloads.
      * Read from merged env (loadEnv + process.env — CLI injects .env before config runs).

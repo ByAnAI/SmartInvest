@@ -527,6 +527,25 @@ export async function fetchCommodityDailyCandlesFromYahoo(
   return { bars: [], source: 'none', detail: lastError };
 }
 
+function yahooCryptoSymbol(cryptoId: string): string {
+  return `${cryptoId.trim().toUpperCase()}-USD`;
+}
+
+/** Crypto candles for Trading Platform crypto panel (Yahoo symbols like BTC-USD). */
+export async function fetchCryptoCandlesWithFallback(
+  cryptoId: string,
+  resolution: FxChartResolutionId
+): Promise<{ bars: OhlcBar[]; source: 'yahoo' | 'none'; detail?: string }> {
+  const id = cryptoId.trim().toUpperCase();
+  const { bars, lastError } = await fetchYahooChartCandlesBySymbol(`CRYPTO:${id}`, yahooCryptoSymbol(id), resolution);
+  if (bars.length > 0) return { bars: normalizeOhlcBars(bars), source: 'yahoo' };
+  return {
+    bars: [],
+    source: 'none',
+    detail: lastError || `Yahoo returned no crypto candles for ${yahooCryptoSymbol(id)}.`,
+  };
+}
+
 /** Local CSV (`public/commodity_data`) then Yahoo daily chart for commodities panel. */
 export async function fetchCommodityDailyCandlesWithFallback(
   commodityId: string,

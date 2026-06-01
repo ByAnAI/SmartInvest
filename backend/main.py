@@ -37,7 +37,15 @@ from forex_registry import FOREX_YAHOO, normalize_forex_pair_symbol, pairs_touch
 from forex_sentinel_payload import build_sentinel_payload
 from commodity_sentinel_payload import build_commodity_forecast_payload, list_commodity_ids
 from macro_daily import load_macro_daily
-from macro_report_store import load_macro_report, save_macro_report
+from macro_report_store import load_latest_macro_report, load_macro_report, save_macro_report
+from news_sentiment import (
+    article_to_public,
+    average_sentiment_for_symbol,
+    build_portfolio_sentiment,
+    fetch_news_feed,
+    health_score_from_average,
+    sentiment_label,
+)
 
 app = FastAPI(title="Watchlist API", version="0.1.0")
 
@@ -417,9 +425,19 @@ def get_macro_report(
         Optional[str],
         Query(description="Calendar date label YYYY-MM-DD; defaults to server local today"),
     ] = None,
+    latest: Annotated[
+        bool,
+        Query(description="When true, return the newest saved report by report date"),
+    ] = False,
 ) -> dict[str, Any]:
-    """Load saved macro LLM report for a given day (backend/data/macro_reports/macro_report_YYYY-MM-DD.txt)."""
+    """Load a saved macro LLM report by day, or the newest saved report when latest=true."""
     try:
+        if latest:
+            payload = load_latest_macro_report()
+            if payload is None:
+                return jsonable_encoder({"report_date": None, "found": False, "content": None, "path": None})
+            return jsonable_encoder({"found": True, **payload})
+
         day = (report_date or date.today().isoformat()).strip()
         payload = load_macro_report(day)
         if payload is None:
@@ -429,6 +447,18 @@ def get_macro_report(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read macro report: {e}") from e
+
+
+@app.get("/api/macro/report/latest")
+def get_latest_macro_report() -> dict[str, Any]:
+    """Load the newest saved macro LLM report by report date."""
+    try:
+        payload = load_latest_macro_report()
+        if payload is None:
+            return jsonable_encoder({"report_date": None, "found": False, "content": None, "path": None})
+        return jsonable_encoder({"found": True, **payload})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read latest macro report: {e}") from e
 
 
 class MacroReportSaveBody(BaseModel):
@@ -445,6 +475,65 @@ def post_macro_report(body: MacroReportSaveBody) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save macro report: {e}") from e
+
+
+class PortfolioNewsSentimentBody(BaseModel):
+    symbols: list[str] = Field(default_factory=list, description="Portfolio tickers (equities)")
+    limit_per_symbol: int = Field(default=50, ge=1, le=200)
+    max_symbols: int = Field(default=15, ge=1, le=25)
+
+
+@app.get("/api/news/sentiment/{symbol}")
+def get_news_sentiment_for_symbol(
+    symbol: str,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict[str, Any]:
+    """Alpha Vantage NEWS_SENTIMENT for one equity ticker."""
+    try:
+        feed = fetch_news_feed(symbol, limit=limit)
+        sym = symbol.upper()
+        articles = [article_to_public(item, sym) for item in feed[:20]]
+        avg = average_sentiment_for_symbol(feed, sym)
+        return jsonable_encoder(
+            {
+                "symbol": sym,
+                "average_sentiment": avg,
+                "sentiment_label": sentiment_label(avg),
+                "health_score": health_score_from_average(avg),
+                "article_count": len(feed),
+                "articles": articles,
+                "source": "alphavantage",
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"News sentiment failed: {e}") from e
+
+
+@app.post("/api/news/portfolio-sentiment")
+def post_portfolio_news_sentiment(body: PortfolioNewsSentimentBody) -> dict[str, Any]:
+    """
+    News + sentiment per portfolio position via Alpha Vantage; portfolio health =
+    mean of per-position average sentiment scores (-1..+1) and 0–100 health scale.
+    """
+    if not body.symbols:
+        raise HTTPException(status_code=400, detail="Provide at least one symbol.")
+    try:
+        payload = build_portfolio_sentiment(
+            body.symbols,
+            limit_per_symbol=body.limit_per_symbol,
+            max_symbols=body.max_symbols,
+        )
+        return jsonable_encoder(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Portfolio news sentiment failed: {e}") from e
 
 
 @app.get("/api/health")

@@ -1,0 +1,86 @@
+# US Macroeconomic Report
+# Report date: 2026-05-21
+# Saved at (UTC): 2026-05-21T05:15:06.065576+00:00
+# Source: macro_daily.csv snapshot
+
+### Executive Summary
+
+- **GDP Growth**: GDP remains robust at $31,856.3 billion, indicating strong economic activity.
+- **Industrial Production**: Industrial production has slowed slightly to 102.4963 from its peak, suggesting a potential slowdown in manufacturing.
+- **Retail Sales**: Retail sales have increased to 757,085, pointing towards continued consumer spending power.
+- **Unemployment Rate**: The unemployment rate stands at 4.3%, indicating a tight labor market and high job security.
+- **Non-Farm Payrolls**: Non-farm payrolls have grown by 158,736, reinforcing the positive employment outlook.
+- **Jobless Claims**: Jobless claims remain elevated at 211,000, hinting at some underlying labor market stress.
+- **Labor Participation Rate**: The participation rate is steady at 61.8%, suggesting a stable workforce.
+- **Inflation**: Inflation remains high with the CPI at 332.407 and PPI at 283.764, indicating persistent price pressures.
+- **Interest Rates**: Fed Funds Rate is at 3.64% while the yield curve has flattened to 0.5%, signaling potential recession risks.
+- **Financial Conditions**: The USD Index is strong at 119.2825, and credit spreads are tight at 2.83%, suggesting stable financial conditions.
+
+**Market Regime**: Risk-on environment with moderate tightening pressures.
+
+---
+
+### Growth Outlook
+
+- **GDP**: GDP growth remains steady at $31,856.3 billion, indicating sustained economic activity.
+- **Industrial Production**: Industrial production has slowed slightly to 102.4963 from its peak, suggesting a potential slowdown in manufacturing output and investment.
+- **Retail Sales**: Retail sales have increased to 757,085, pointing towards continued consumer spending power despite some moderation.
+
+**Equity Market Implications**: Strong GDP growth supports equity markets but the slowing industrial production could lead to cautious optimism. Continued robust retail sales suggest positive consumer sentiment and potential support for tech and consumer discretionary sectors.
+
+---
+
+### Labor Market Conditions
+
+- **Unemployment Rate**: The unemployment rate is at 4.3%, indicating a tight labor market with high job security.
+- **Non-Farm Payrolls**: Non-farm payrolls have grown by 158,736, reinforcing the positive employment outlook.
+- **Jobless Claims**: Jobless claims remain elevated at 211,000, hinting at some underlying labor market stress.
+
+**Fed Policy Expectations**: The tight unemployment rate and strong job growth suggest that the Fed may continue to raise interest rates cautiously but with a focus on maintaining stable employment levels.
+
+---
+
+### Inflation Trend
+
+- **CPI**: The Consumer Price Index (CPI) is at 332.407, indicating persistent inflationary pressures.
+- **PPI**: Producer Price Index (PPI) stands at 283.764, suggesting that input costs are rising and could lead to further price increases.
+
+**Impact on Interest Rates & Equity Valuations**: High inflation is likely to keep interest rates elevated, which may dampen equity valuations but support real assets like energy and materials sectors.
+
+---
+
+### Interest Rates & Yield Curve
+
+- **Fed Funds Rate**: The Fed Funds Rate remains at 3.64%, indicating ongoing monetary tightening.
+- **Yield Curve (10Y-2Y)**: The yield curve has flattened to 0.5%, signaling potential recession risks as the spread narrows.
+
+**Implications for Risk Assets**: A flattening yield curve suggests caution in risk assets like equities and credit, while banks may face reduced net interest margins.
+
+---
+
+### Market Liquidity & Financial Conditions
+
+- **USD Index**: The USD Index is strong at 119.2825, supporting a dollar-based investment environment.
+- **Credit Spreads**: Credit spreads are tight at 2.83%, indicating stable financial conditions and low default risk.
+- **Fed Balance Sheet**: The Fed balance sheet remains steady at $6,728,502 billion, suggesting no significant liquidity changes.
+
+**Impact on Risk Assets**: Strong USD and tight credit spreads support a neutral stance for equities but could favor defensive sectors like utilities and consumer staples.
+
+---
+
+### Overall Market Impact
+
+- **Bullish/Bearish/Neutral**: The current macroeconomic environment is moderately bullish with some caution due to inflationary pressures and potential yield curve inversion risks.
+- **Sector Implications**:
+  - **Tech & Consumer Discretionary**: Strong retail sales support these sectors but high interest rates could dampen tech valuations.
+  - **Financials**: Stable financial conditions support banking stocks, but a flattening yield curve may limit gains.
+  - **Energy & Materials**: High inflation and strong demand support energy and materials.
+  - **Defensive Sectors (Utilities, Consumer Staples)**: Defensive sectors are likely to perform well due to stable economic conditions.
+
+**Risk Scenarios**: A significant inversion of the yield curve could trigger a bearish market reaction. Continued high inflation may lead to further interest rate hikes, affecting growth stocks negatively.
+
+---
+
+### Final Investment Takeaway
+
+In light of the current macroeconomic environment, we recommend maintaining a balanced portfolio with a focus on defensive sectors and energy/materials. Given the potential for a flattening yield curve, caution is advised in risk assets like tech and consumer discretionary stocks. We also suggest hedging against inflation risks through real asset investments.
